@@ -568,6 +568,12 @@ services:
               "Handlers": {
                 "/": {
                   "Proxy": "http://openclaw-gateway:${GATEWAY_PORT:-18789}"
+                },
+                "/kuma/": {
+                  "Proxy": "http://opendeclawed-uptime-kuma:3001"
+                },
+                "/logs/": {
+                  "Proxy": "http://opendeclawed-dozzle:${DOZZLE_PORT:-5005}"
                 }
               }
             }
