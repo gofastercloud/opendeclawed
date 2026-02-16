@@ -62,7 +62,7 @@
 - Docker Compose V2 (included with OrbStack)
 - ~10GB disk for models + containers
 - An Anthropic API key OR Claude Pro/Max subscription
-- A domain on Cloudflare (Option A) OR NordVPN subscription (Option B)
+- A domain on Cloudflare (Option A) OR NordVPN subscription (Option B) OR Tailscale account (Option C)
 
 ---
 
@@ -120,6 +120,18 @@ chmod +x setup.sh && ./setup.sh
 
 The script will prompt for your tunnel token and configure everything.
 
+### Accessing dashboards
+
+Cloudflare Tunnel routes dashboard paths alongside the gateway:
+
+| Dashboard | URL |
+|---|---|
+| OpenClaw Gateway | `https://openclaw.yourdomain.com/` |
+| Uptime Kuma | `https://openclaw.yourdomain.com/kuma/` |
+| Dozzle Logs | `https://openclaw.yourdomain.com/logs/` |
+
+All paths are protected by your Cloudflare Access policy (GitHub OAuth).
+
 ---
 
 ## Ingress Option B: NordVPN Meshnet
@@ -140,83 +152,141 @@ This is the "private access" option. Your OpenClaw instance gets its own Meshnet
 - **Sharing**: Can't easily give someone else access without adding them to your Meshnet
 - **Uptime**: If your home network goes down, Cloudflare can show a friendly error page; Meshnet just fails silently
 
-### Setup: NordVPN Meshnet in Docker
-
-Replace the `cloudflared` service in `docker-compose.yml` with:
-
-```yaml
-  # =========================================================================
-  # NordVPN Meshnet — P2P encrypted access, replaces Cloudflare Tunnel
-  # =========================================================================
-  nordvpn:
-    image: ghcr.io/bubuntux/nordvpn:latest
-    container_name: nordvpn-meshnet
-    restart: unless-stopped
-    networks:
-      - openclaw-egress
-    cap_add:
-      - NET_ADMIN               # required for VPN tunnel creation
-      - NET_RAW                 # required for NordLynx
-      - SYS_MODULE              # required for WireGuard kernel module
-    sysctls:
-      - net.ipv6.conf.all.disable_ipv6=1   # prevent IPv6 leaks
-    environment:
-      - TOKEN=${NORDVPN_TOKEN}              # NordVPN service token
-      - MESHNET=1                           # enable Meshnet
-      - CONNECT=1                           # connect to VPN on start
-      - TECHNOLOGY=NordLynx                 # WireGuard-based protocol
-      - DNS=1.1.1.1,9.9.9.9                # non-Nord DNS for container resolution
-      - ALLOWLIST_PORTS=18789               # only expose gateway port via Meshnet
-      - LAN_DISCOVERY=off                   # prevent LAN discovery
-      - FIREWALL=on
-      - KILLSWITCH=on                       # block all traffic if VPN drops
-    # Note: nordvpn container needs more privileges than cloudflared
-    # because it creates actual network tunnel interfaces
-    mem_limit: 512m
-    cpus: "1.0"
-    pids_limit: 64
-    security_opt:
-      - no-new-privileges:true
-    depends_on:
-      egress-firewall:
-        condition: service_started
-      openclaw-gateway:
-        condition: service_healthy
-```
-
-Then modify `openclaw-gateway` to route through NordVPN:
-
-```yaml
-  openclaw-gateway:
-    # ... keep all existing config ...
-    # ADD: route through NordVPN for outbound traffic
-    network_mode: "service:nordvpn"  # share NordVPN's network namespace
-    # REMOVE: the separate networks config when using network_mode
-    depends_on:
-      - nordvpn
-      - llama-embed
-      - llama-chat
-```
-
-**Important**: When using `network_mode: "service:nordvpn"`, the gateway shares NordVPN's network stack. All outbound traffic (including Anthropic API calls) exits through the VPN. Your home IP is never exposed to Anthropic.
-
-### Getting your NordVPN token
+### Step 1: Get your NordVPN token
 
 1. Log in at https://my.nordaccount.com
-2. Go to **Services → NordVPN**
-3. Under **Access Token**, generate a new token
+2. Go to **Services → NordVPN → Access Token**
+3. Generate a new token and copy it
 4. Add to your `.env`: `NORDVPN_TOKEN=<token>`
 
-### Accessing via Meshnet
-
-After the container starts:
+### Step 2: Run the setup script
 
 ```bash
-# Get the Meshnet hostname
-docker exec nordvpn-meshnet nordvpn meshnet peer list
+chmod +x scripts/setup.sh && ./scripts/setup.sh
 ```
 
-Your OpenClaw instance will be accessible at `http://<meshnet-hostname>:18789` from any device in your Meshnet. On your phone, just have NordVPN running with Meshnet enabled.
+Choose option **3 (meshnet)** when prompted for ingress mode. The script will ask for your NordVPN token if not already in `.env`.
+
+### Step 3: Start with the meshnet profile
+
+```bash
+docker compose --profile meshnet up -d
+```
+
+This starts the NordVPN container on an isolated `openclaw-meshnet` network plus a Caddy reverse proxy that bridges meshnet traffic to your services. The NordVPN container is the only thing exposed to meshnet peers; Caddy is the sole path from meshnet into the service network.
+
+### Step 4: Find your meshnet IP
+
+The setup script detects and displays the meshnet IP at startup. You can also find it manually:
+
+```bash
+docker exec opendeclawed-nordvpn nordvpn meshnet peer list
+```
+
+### Step 5: Access your dashboards
+
+All dashboards are proxied through Caddy over HTTPS:
+
+| Dashboard | URL |
+|---|---|
+| OpenClaw Gateway | `https://<meshnet-ip>/` |
+| Uptime Kuma | `https://<meshnet-ip>/kuma/` |
+| Dozzle Logs | `https://<meshnet-ip>/logs/` |
+
+On your phone or laptop, have NordVPN running with Meshnet enabled and navigate to the meshnet IP.
+
+**Note**: Caddy uses self-signed TLS certificates by default. Your browser will show a certificate warning on first visit — this is expected for meshnet access where there is no public CA to issue certificates. You can trust the certificate manually or configure Caddy with your own cert.
+
+---
+
+## Ingress Option C: Tailscale Mesh VPN
+
+This is the "zero-config mesh" option. Tailscale creates a WireGuard-based mesh VPN between your devices. OpenClaw joins your tailnet as a machine, accessible via HTTPS at `https://openclaw.<your-tailnet>.ts.net`. No public DNS, no port forwarding, no third-party proxy in the data path.
+
+### Why Tailscale
+
+- **Zero-config WireGuard**: No manual key management, NAT traversal is automatic
+- **ACL-controlled**: Tailscale admin console lets you define exactly which users/devices can reach OpenClaw
+- **HTTPS built-in**: Tailscale Serve provides automatic TLS certificates via Let's Encrypt
+- **No public attack surface**: Only tailnet members can connect — no DNS record, no port exposure
+- **Works everywhere**: Tailscale clients exist for macOS, Windows, Linux, iOS, Android
+
+### Why Cloudflare may still be better
+
+- **Public sharing**: If you need to share access with people outside your tailnet
+- **WAF/DDoS**: Cloudflare provides edge-level protection; Tailscale is device-to-device
+- **No client required**: Cloudflare Access works via browser; Tailscale needs a client on every device
+
+### Step 1: Create a Tailscale Auth Key
+
+1. Go to https://login.tailscale.com/admin/settings/keys
+2. Click **Generate auth key**
+3. Settings:
+   - **Reusable**: Yes (so the container can rejoin after restart)
+   - **Ephemeral**: No (we want persistent state)
+   - **Tags**: Add a tag like `tag:openclaw` for ACL targeting
+4. Copy the auth key (`tskey-auth-...`)
+
+### Step 2: Configure Tailscale ACLs (Recommended)
+
+In the Tailscale admin console (**Access Controls**), add a policy to restrict who can reach OpenClaw:
+
+```json
+{
+  "acls": [
+    {
+      "action": "accept",
+      "src": ["autogroup:member"],
+      "dst": ["tag:openclaw:443"]
+    }
+  ],
+  "tagOwners": {
+    "tag:openclaw": ["autogroup:admin"]
+  }
+}
+```
+
+This allows all tailnet members to reach OpenClaw on port 443 only.
+
+### Step 3: Run the setup script
+
+```bash
+chmod +x setup.sh && ./setup.sh
+```
+
+Choose option **4 (tailscale)** when prompted for ingress mode. The script will ask for your auth key and hostname.
+
+### Step 4: Verify and access dashboards
+
+After the stack starts:
+
+```bash
+# Check Tailscale is connected
+docker logs openclaw-tailscale
+
+# Access from any device on your tailnet
+curl https://openclaw.<your-tailnet>.ts.net/health
+```
+
+Tailscale Serve proxies all dashboard paths over HTTPS automatically:
+
+| Dashboard | URL |
+|---|---|
+| OpenClaw Gateway | `https://openclaw.<your-tailnet>.ts.net/` |
+| Uptime Kuma | `https://openclaw.<your-tailnet>.ts.net/kuma/` |
+| Dozzle Logs | `https://openclaw.<your-tailnet>.ts.net/logs/` |
+
+---
+
+## Onboarding Wizard
+
+The setup script generates a complete `openclaw.json` with your API keys, ingress settings, and channel configuration. Because the config is fully pre-populated, **the onboarding wizard is skipped by default** — you don't need to step through it manually.
+
+If you want to run the wizard anyway (e.g., to review settings interactively or configure options not covered by `setup.sh`):
+
+```bash
+docker compose --profile cli run --rm openclaw-cli onboard
+```
 
 ---
 
@@ -535,6 +605,36 @@ docker compose run --rm --profile cli openclaw-cli pairing approve whatsapp <COD
 
 ---
 
+## LiteLLM Proxy (LLM Router)
+
+All local LLM traffic flows through a LiteLLM proxy container (`opendeclawed-litellm`), which presents a single OpenAI-compatible `/v1` endpoint to OpenClaw. By default it routes to the containerized llama.cpp backends, but you can swap or add backends by editing `litellm_config.yaml` — no `openclaw.json` changes needed.
+
+LiteLLM logs every request to stdout, which means all LLM call logs are visible in Dozzle alongside the rest of the stack.
+
+### Swapping to a different backend
+
+Edit `litellm_config.yaml` and change the `api_base` URLs. For example, to use MLX servers running natively on your Mac:
+
+```yaml
+model_list:
+  - model_name: local-chat
+    litellm_params:
+      model: openai/local-chat
+      api_base: "http://host.docker.internal:8091/v1"
+      api_key: "not-needed"
+  - model_name: local-embed
+    litellm_params:
+      model: openai/local-embed
+      api_base: "http://host.docker.internal:8090/v1"
+      api_key: "not-needed"
+```
+
+Then restart: `docker compose restart litellm`
+
+`host.docker.internal` resolves to your Mac's IP from inside Docker containers. This works for MLX (`mlx_lm.server`), Ollama, LM Studio, vLLM, or any OpenAI-compatible endpoint.
+
+---
+
 ## Additional Security Hardening
 
 ### 1. Filesystem integrity monitoring
@@ -628,7 +728,30 @@ mkdir -p ~/.openclaw/blocky
 cp examples/blocky-config.yml ~/.openclaw/blocky/config.yml
 ```
 
-### 6. Restrict Docker socket access
+### 6. Centralized log viewer (Dozzle)
+
+Dozzle provides a real-time web UI for viewing, filtering, and searching container logs. It reads Docker's native json-file logs with zero configuration — no log driver changes, no sidecars, no storage backend.
+
+Dozzle is enabled automatically with the `monitor` profile (same as Uptime Kuma and Watchtower).
+
+```bash
+# Open the log viewer
+open http://127.0.0.1:5005
+
+# Or via CLI (still works as before)
+docker compose logs -f openclaw-gateway
+docker compose logs -f openclaw-blocky
+```
+
+Features relevant to security operations:
+
+- **Container filter**: DOZZLE_FILTER restricts visibility to `openclaw-*` containers only
+- **Regex search**: find specific errors, IP addresses, or DNS queries across all containers
+- **Live tail**: real-time log streaming with pause/resume
+- **No analytics**: DOZZLE_NO_ANALYTICS=true disables telemetry to Dozzle maintainers
+- **Read-only**: Dozzle cannot modify containers, exec into them, or alter logs
+
+### 7. Restrict Docker socket access
 
 If you're paranoid about Docker socket exposure (and you should be), ensure:
 

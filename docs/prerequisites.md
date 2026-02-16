@@ -2,6 +2,8 @@
 
 Everything you need before running `setup.sh`. Each section covers what the credential is, how to get it, and how to store it safely.
 
+**Note**: The setup script validates all credentials against their expected format (e.g., Anthropic keys must start with `sk-ant-`, VirusTotal keys must be 64-char hex). Credentials are persisted to `.env` immediately as you enter them — if the script crashes, you won't need to re-enter anything on the next run.
+
 ---
 
 ## Runtime Requirements
@@ -79,15 +81,28 @@ For authentication, set up **Cloudflare Access** with GitHub OAuth — see `docs
 
 ### 4. NordVPN Token
 
-Required only if you prefer private Meshnet access (no public DNS, no third-party trust).
+Required only if using `--profile meshnet` for private Meshnet access (no public DNS, no third-party trust).
 
 1. Log in at [my.nordaccount.com](https://my.nordaccount.com)
 2. **Services → NordVPN → Access Token**
 3. Generate a new token and copy it
+4. Variable: `NORDVPN_TOKEN` in `.env`
 
 Meshnet must be enabled on all devices you want to access OpenClaw from.
 
-### 5. Telegram Bot Token
+### 5. Tailscale Auth Key
+
+Required only if you prefer WireGuard-based mesh VPN access. Tailscale is zero-config and provides automatic HTTPS.
+
+1. Go to [login.tailscale.com/admin/settings/keys](https://login.tailscale.com/admin/settings/keys)
+2. Click **Generate auth key**
+3. Enable **Reusable** (so container survives restarts without re-auth)
+4. Optionally tag it `tag:openclaw` for ACL targeting
+5. Copy the key — format: `tskey-auth-...`
+
+See `docs/setup-guide.md` for ACL configuration and Tailscale Serve setup.
+
+### 6. Telegram Bot Token
 
 Required if you want to interact with OpenClaw via Telegram (the recommended messaging channel — simplest to set up).
 
@@ -104,7 +119,7 @@ Lock down the bot immediately:
 /setprivacy     → Enable
 ```
 
-### 6. Discord Bot Token
+### 7. Discord Bot Token
 
 Alternative to Telegram. More setup steps but works well if you already use Discord.
 
@@ -182,6 +197,7 @@ chmod 600 ~/.openclaw/skills.allowlist.json
 | VirusTotal API key | `.env` (`VIRUSTOTAL_API_KEY`) | You, manually |
 | Cloudflare tunnel token | `.env` (`CLOUDFLARE_TOKEN`) | You, manually |
 | NordVPN token | `.env` (`NORDVPN_TOKEN`) | You, manually |
+| Tailscale auth key | `.env` (`TS_AUTHKEY`) | `setup.sh` |
 | Telegram bot token | `~/.openclaw/openclaw.json` | `setup.sh` |
 | Discord bot token | `~/.openclaw/openclaw.json` | `setup.sh` |
 | Gateway pairing secret | `~/.openclaw/openclaw.json` | `setup.sh` (auto-generated) |
@@ -203,6 +219,7 @@ git diff --cached --name-only | xargs grep -l "sk-ant\|eyJ\|VIRUSTOTAL" 2>/dev/n
 | Anthropic API key | 30 days | Console → revoke old → create new → update `openclaw.json` → restart gateway |
 | VirusTotal API key | 90 days | VT dashboard → regenerate → update `.env` |
 | Cloudflare tunnel token | 90 days | CF dashboard → rotate token → update `.env` → restart cloudflared |
+| Tailscale auth key | 90 days | TS admin console → revoke → generate new → update `.env` → restart tailscale |
 | Telegram bot token | On suspicion of compromise | @BotFather → `/revoke` → create new → update `openclaw.json` |
 | Gateway pairing secret | 90 days | `setup.sh` regenerates → restart gateway → re-pair devices |
 
@@ -239,9 +256,10 @@ Before running `setup.sh`, confirm:
 - [ ] VirusTotal API key ready (free tier is fine)
 - [ ] Model files downloaded to `./models/`
 - [ ] Blocky DNS config copied to `~/.openclaw/blocky/config.yml`
-- [ ] Ingress method chosen: local-only, Cloudflare tunnel, or NordVPN Meshnet
+- [ ] Ingress method chosen: local-only, Cloudflare tunnel, NordVPN Meshnet, or Tailscale
 - [ ] If tunnel: Cloudflare token and domain configured
 - [ ] If Meshnet: NordVPN token ready
+- [ ] If Tailscale: Auth key generated (reusable recommended)
 - [ ] If Telegram: Bot created and locked down via @BotFather
 - [ ] `.env` file created from `.env.example` with your values
 - [ ] `.env` permissions set to `600`

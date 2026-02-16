@@ -19,7 +19,7 @@ Thanks for your interest in contributing! This project aims to provide a secure,
 ### We enthusiastically welcome:
 
 - **Security hardening improvements** — stricter defaults, better isolation, reduced attack surface
-- **Ingress options** — Tailscale, WireGuard, Caddy, Traefik, or other secure ingress layers
+- **Ingress options** — Caddy, Traefik, Headscale, or other secure ingress layers (Cloudflare Tunnel, Tailscale, and NordVPN Meshnet are already supported)
 - **Platform support** — ARM64, NixOS, Kubernetes, or other deployment targets
 - **Model configuration examples** — documentation and templates for different AI models
 - **Bug fixes** — include clear reproduction steps and rationale
@@ -56,6 +56,9 @@ When extracting archives, validate all paths before extraction using `tar tzf` +
 
 ### Container hardening baseline
 Every new container must include: `read_only: true`, `cap_drop: ALL`, `no_new_privileges: true`, `user: "65534:65534"`, `ipc: private`, resource limits (`mem_limit`, `cpus`, `pids_limit`), and `noexec,nosuid,nodev` on tmpfs mounts.
+
+### Meshnet network isolation
+The NordVPN meshnet container runs on its own dedicated network (`openclaw-meshnet`), separate from both the internal and egress networks. Caddy is the sole container that bridges `openclaw-meshnet` and the service network — no other container can route to meshnet peers. If you add a new ingress method with similar trust boundaries, follow this pattern: isolate the ingress container on a dedicated network and use a single reverse proxy as the bridge.
 
 ### Secrets detection (TruffleHog)
 A pre-commit hook runs TruffleHog on every commit to catch leaked API keys, tokens, and high-entropy strings. Install with `pre-commit install` after cloning. For manual scans: `./scripts/scan-secrets.sh`. If your change triggers a false positive, add the path to `.trufflehog-config.yaml`.
