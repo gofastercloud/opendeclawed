@@ -485,12 +485,28 @@ services:
     container_name: opendeclawed-cloudflared
     profiles:
       - tunnel
-    command: |
-      tunnel run
-      --token ${CLOUDFLARE_TOKEN}
+    entrypoint: |
+      /bin/sh -c '
+        mkdir -p /etc/cloudflared
+        cat > /etc/cloudflared/config.yml << CFGEOF
+      ingress:
+        - hostname: "${CLOUDFLARE_TUNNEL_ROUTE:-openclaw.example.com}"
+          path: "/kuma/*"
+          service: "http://opendeclawed-uptime-kuma:3001"
+        - hostname: "${CLOUDFLARE_TUNNEL_ROUTE:-openclaw.example.com}"
+          path: "/logs/*"
+          service: "http://opendeclawed-dozzle:${DOZZLE_PORT:-5005}"
+        - hostname: "${CLOUDFLARE_TUNNEL_ROUTE:-openclaw.example.com}"
+          service: "http://openclaw-gateway:${GATEWAY_PORT:-18789}"
+        - service: http_status:404
+      CFGEOF
+        exec cloudflared tunnel --config /etc/cloudflared/config.yml run --token ${CLOUDFLARE_TOKEN}
+      '
     networks:
       openclaw-egress: {}
     read_only: true
+    tmpfs:
+      - /etc/cloudflared:size=1m,noexec,nosuid,nodev
     security_opt:
       - no-new-privileges:true
     cap_drop:
