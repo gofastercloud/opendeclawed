@@ -4,7 +4,7 @@
 
 # OpenDeclawed
 
-Production-grade, security-hardened Docker deployment for OpenClaw, an AI agent platform. Fully parameterized with sensible defaults, kernel-level egress control, and optional Cloudflare tunnel ingress.
+Production-grade, security-hardened Docker deployment for OpenClaw, an AI agent platform. Fully parameterized with sensible defaults, kernel-level egress control, and multiple private ingress options.
 
 ## Features
 
@@ -27,12 +27,11 @@ Production-grade, security-hardened Docker deployment for OpenClaw, an AI agent 
   - **Local** (default): Gateway on 127.0.0.1:18789
   - **Tunnel** (--profile tunnel): Cloudflare Tunnel, zero exposed ports
   - **Tailscale** (--profile tailscale): Tailscale mesh VPN, WireGuard-based, ACL-controlled
-  - **Meshnet** (--profile meshnet): NordVPN Meshnet, peer-to-peer, no public DNS
-  - **Monitor** (--profile monitor): Uptime Kuma + Watchtower + Dozzle log viewer
+  - **Monitor** (--profile monitor): Watchtower auto-updates + Dozzle log viewer
   - **CLI** (--profile cli): Interactive shell for onboarding/debugging
 
 - **Production-Ready**
-  - Docker Compose v3.9+ with resource limits and reservations
+  - Docker Compose v2.0+ with resource limits and reservations
   - Healthchecks with automatic restart (unless-stopped)
   - JSON file logging with rotation (10MB, 3 files)
   - Dozzle real-time log viewer (search, filter, regex across all containers)
@@ -66,8 +65,8 @@ Production-grade, security-hardened Docker deployment for OpenClaw, an AI agent 
 └──────────────────────────────────────────────────────────────────────┘
 
 ┌─ MONITOR PROFILE (optional) ────────────────────────────────────────┐
-│  uptime-kuma → gateway /health       watchtower → socket-proxy     │
-│  (127.0.0.1:3001)                    (no raw docker.sock access)   │
+│  dozzle → real-time log viewer       watchtower → socket-proxy     │
+│  (127.0.0.1:5005)                    (no raw docker.sock access)   │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -79,7 +78,7 @@ Production-grade, security-hardened Docker deployment for OpenClaw, an AI agent 
 - 8GB+ RAM (CPU-only) or 16GB+ (GPU)
 - Linux kernel with iptables support (DOCKER-USER chain)
 
-**See [`docs/prerequisites.md`](docs/prerequisites.md) for the full guide**: how to get every API key (Anthropic, VirusTotal, Cloudflare, NordVPN, Telegram, Discord), download models, and store secrets securely.
+**See [`docs/prerequisites.md`](docs/prerequisites.md) for the full guide**: how to get every API key (Anthropic, VirusTotal, Cloudflare, Tailscale, Telegram), download models, and store secrets securely.
 
 ### 2. Local Mode (No Cloudflare)
 

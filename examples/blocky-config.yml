@@ -50,9 +50,6 @@ blocking:
         www.virustotal.com
         # Telegram Bot API
         api.telegram.org
-        # Discord API
-        discord.com
-        gateway.discord.gg
         # Cloudflare (tunnel + DNS)
         cloudflare-dns.com
         api.cloudflare.com

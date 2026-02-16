@@ -55,8 +55,7 @@
 #  - Default: Local-only mode (gateway on 127.0.0.1 via port mapping)
 #  - "tunnel": Enable Cloudflare tunnel ingress (cloudflared service)
 #  - "tailscale": Enable Tailscale mesh VPN ingress (WireGuard-based)
-#  - "meshnet": Enable NordVPN Meshnet ingress (peer-to-peer, profile: meshnet)
-#  - "monitor": Enable Uptime Kuma + Watchtower (health + auto-update)
+#  - "monitor": Enable Watchtower + Dozzle (auto-update + log viewer)
 #  - "cli": Enable openclaw-cli for onboarding/debugging (interactive)
 #
 # USAGE:
@@ -66,7 +65,7 @@
 #  # With Cloudflare tunnel (requires CLOUDFLARE_TOKEN):
 #  docker-compose --profile tunnel up -d
 #
-#  # With monitoring (Uptime Kuma + Watchtower):
+#  # With monitoring (Watchtower + Dozzle logs):
 #  docker-compose --profile monitor up -d
 #
 #  # Full stack (tunnel + monitoring):
@@ -488,20 +487,14 @@ services:
       - tunnel
     # NOTE: Token-based tunnels use Cloudflare dashboard ingress rules, which
     # take precedence over this local config. For token tunnels, configure
-    # /kuma/* and /logs/* routes in Cloudflare Zero Trust dashboard under
-    # Networks > Tunnels > Public Hostname. The local config below serves as
-    # documentation and works for locally-managed (credentials-file) tunnels.
+    # routes in Cloudflare Zero Trust dashboard under Networks > Tunnels >
+    # Public Hostname. The local config below serves as documentation and
+    # works for locally-managed (credentials-file) tunnels.
     entrypoint: |
       /bin/sh -c '
         mkdir -p /etc/cloudflared
         cat > /etc/cloudflared/config.yml << CFGEOF
       ingress:
-        - hostname: "${CLOUDFLARE_TUNNEL_ROUTE:-openclaw.example.com}"
-          path: "/kuma/*"
-          service: "http://uptime-kuma:3001"
-        - hostname: "${CLOUDFLARE_TUNNEL_ROUTE:-openclaw.example.com}"
-          path: "/logs/*"
-          service: "http://dozzle:${DOZZLE_PORT:-5005}"
         - hostname: "${CLOUDFLARE_TUNNEL_ROUTE:-openclaw.example.com}"
           service: "http://openclaw-gateway:${GATEWAY_PORT:-18789}"
         - service: http_status:404
@@ -590,12 +583,6 @@ services:
               "Handlers": {
                 "/": {
                   "Proxy": "http://openclaw-gateway:${GATEWAY_PORT:-18789}"
-                },
-                "/kuma/": {
-                  "Proxy": "http://uptime-kuma:3001"
-                },
-                "/logs/": {
-                  "Proxy": "http://dozzle:${DOZZLE_PORT:-5005}"
                 }
               }
             }
@@ -626,122 +613,6 @@ services:
     depends_on:
       egress-firewall:
         condition: service_started
-      openclaw-gateway:
-        condition: service_healthy
-    labels:
-      - "com.centurylinklabs.watchtower.enable=false"
-
-  # ─────────────────────────────────────────────────────────────────────
-  # NORDVPN MESHNET: Peer-to-peer mesh VPN ingress (optional, profile: meshnet)
-  # ─────────────────────────────────────────────────────────────────────
-  # Provides a routable meshnet IP for inbound connections from your
-  # NordVPN meshnet peers. Only meshnet traffic passes through this
-  # container — regular internet egress is unaffected.
-  #
-  # Profile: "meshnet"
-  #  - Enable with: docker compose --profile meshnet up -d
-  #  - Requires NORDVPN_TOKEN env var
-  #
-  # Security:
-  #  - Isolated to openclaw-meshnet network (cannot reach internal or egress)
-  #  - Traffic is inbound only (your devices → dashboards)
-  #  - iptables DNAT forwards meshnet:443 → caddy (sole bridge to services)
-  #  - cap_add: NET_ADMIN + NET_RAW (required for WireGuard + iptables)
-  #  - Read-only root, all other caps dropped
-  #  - Persistent state volume avoids re-auth on restart
-  nordvpn-meshnet:
-    build:
-      context: ./nordvpn
-      dockerfile: Dockerfile
-    image: "${NORDVPN_IMAGE:-opendeclawed-nordvpn:local}"
-    container_name: opendeclawed-nordvpn
-    profiles:
-      - meshnet
-    networks:
-      openclaw-meshnet: {}
-      openclaw-egress: {}      # nordvpnd needs internet for auth + meshnet coordination
-    volumes:
-      - nordvpn-state:/var/lib/nordvpn
-    tmpfs:
-      - /tmp:size=64m,noexec,nosuid,nodev
-      - /run:size=32m,noexec,nosuid,nodev
-    environment:
-      - NORDVPN_TOKEN=${NORDVPN_TOKEN:-}
-      - CADDY_IP=${CADDY_IP:-172.29.0.10}
-      - CADDY_PORT=443
-    deploy:
-      resources:
-        limits:
-          cpus: "${NORDVPN_CPUS:-0.5}"
-          memory: "${NORDVPN_MEM:-256m}"
-    # Privileged mode required — nordvpnd manages WireGuard tunnels, modifies
-    # sysctls (rp_filter), creates network interfaces, and spawns norduserd.
-    # Acceptable because this container is network-isolated to openclaw-meshnet
-    # (internal: true) and cannot reach internal services directly.
-    privileged: true
-    sysctls:
-      - net.ipv6.conf.all.disable_ipv6=1
-    logging:
-      driver: json-file
-      options:
-        max-size: 10m
-        max-file: 3
-    restart: unless-stopped
-    depends_on:
-      egress-firewall:
-        condition: service_started
-    labels:
-      - "com.centurylinklabs.watchtower.enable=false"
-
-  # ─────────────────────────────────────────────────────────────────────
-  # MESHNET-CADDY: TLS reverse proxy for meshnet ingress (profile: meshnet)
-  # ─────────────────────────────────────────────────────────────────────
-  # Bridges openclaw-meshnet (receives traffic from nordvpn DNAT) and
-  # openclaw-egress (proxies to gateway, Kuma, Dozzle). This is the ONLY
-  # container that spans both networks — the sole path from meshnet to services.
-  #
-  # Security:
-  #  - Self-signed TLS by default (meshnet peers trust manually)
-  #  - Read-only root, all caps dropped
-  #  - No internet access (openclaw-meshnet is internal, egress is firewall-controlled)
-  meshnet-caddy:
-    image: "${CADDY_IMAGE:-caddy:alpine}"
-    container_name: opendeclawed-meshnet-caddy
-    profiles:
-      - meshnet
-    networks:
-      openclaw-meshnet:
-        ipv4_address: "172.29.0.10"
-      openclaw-egress: {}
-    volumes:
-      - ./nordvpn/Caddyfile:/etc/caddy/Caddyfile:ro
-    tmpfs:
-      - /tmp:size=32m,noexec,nosuid,nodev
-      - /data:size=64m
-      - /config:size=16m
-    environment:
-      - GATEWAY_PORT=${GATEWAY_PORT:-18789}
-      - DOZZLE_PORT=${DOZZLE_PORT:-5005}
-    deploy:
-      resources:
-        limits:
-          cpus: "${CADDY_CPUS:-0.25}"
-          memory: "${CADDY_MEM:-64m}"
-    security_opt:
-      - no-new-privileges:true
-    cap_drop:
-      - ALL
-    cap_add:
-      - NET_BIND_SERVICE
-    logging:
-      driver: json-file
-      options:
-        max-size: 5m
-        max-file: 2
-    restart: unless-stopped
-    depends_on:
-      nordvpn-meshnet:
-        condition: service_healthy
       openclaw-gateway:
         condition: service_healthy
     labels:
@@ -807,6 +678,7 @@ services:
       - ALL
     tmpfs:
       - /tmp:size=16m,noexec,nosuid,nodev
+      - /run:size=16m,noexec,nosuid,nodev
     logging:
       driver: json-file
       options:
@@ -835,6 +707,7 @@ services:
   blocky:
     image: "${BLOCKY_IMAGE:-spx01/blocky:latest}"
     container_name: opendeclawed-blocky
+    command: ["--config", "/app/config/config.yml"]
     networks:
       openclaw-internal:
         ipv4_address: "${BLOCKY_IP:-172.27.0.53}"
@@ -865,57 +738,6 @@ services:
     depends_on:
       egress-firewall:
         condition: service_started
-    labels:
-      - "com.centurylinklabs.watchtower.enable=true"
-
-  # ─────────────────────────────────────────────────────────────────────
-  # UPTIME-KUMA: Health monitoring dashboard (optional, profile: monitor)
-  # ─────────────────────────────────────────────────────────────────────
-  # Lightweight, self-hosted monitoring for all stack services.
-  # Preconfigured to watch gateway /health endpoint.
-  #
-  # Profile: "monitor"
-  #  - Enable with: docker-compose --profile monitor up -d
-  #
-  # Security:
-  #  - Internal network only (no internet access)
-  #  - cap_drop ALL, no_new_privileges
-  #  - Read-only root with tmpfs + persistent data volume
-  #  - Resource-limited (256m mem default)
-  #  - UI bound to 127.0.0.1 only
-  uptime-kuma:
-    image: "${UPTIME_KUMA_IMAGE:-louislam/uptime-kuma:1}"
-    container_name: opendeclawed-uptime-kuma
-    profiles:
-      - monitor
-    networks:
-      openclaw-internal: {}
-      openclaw-egress: {}
-    ports:
-      - "127.0.0.1:${KUMA_PORT:-3001}:3001"
-    volumes:
-      - uptime-kuma-data:/app/data
-    tmpfs:
-      - /tmp:size=256m,noexec,nosuid,nodev
-    deploy:
-      resources:
-        limits:
-          cpus: "${KUMA_CPUS:-1}"
-          memory: "${KUMA_MEM:-256m}"
-    read_only: true
-    security_opt:
-      - no-new-privileges:true
-    cap_drop:
-      - ALL
-    logging:
-      driver: json-file
-      options:
-        max-size: 10m
-        max-file: 3
-    restart: unless-stopped
-    depends_on:
-      openclaw-gateway:
-        condition: service_healthy
     labels:
       - "com.centurylinklabs.watchtower.enable=true"
 
@@ -985,7 +807,7 @@ services:
   # logs in real time. Reads Docker's native json-file logs — no log
   # driver changes or sidecars required. Read-only Docker socket access.
   #
-  # Profile: "monitor" (same as Uptime Kuma + Watchtower)
+  # Profile: "monitor" (same as Watchtower)
   #
   # Security:
   #  - Docker socket: read-only mount (cannot modify containers)
@@ -1007,7 +829,6 @@ services:
       - /tmp:size=32m,noexec,nosuid,nodev
     environment:
       - DOZZLE_ADDR=:${DOZZLE_PORT:-5005}
-      - DOZZLE_BASE=/logs
       - DOZZLE_LEVEL=info
       - DOZZLE_FILTER=name=opendeclawed-*
       - DOZZLE_NO_ANALYTICS=true
@@ -1118,24 +939,7 @@ networks:
       config:
         - subnet: "${EGRESS_SUBNET:-172.28.0.0/24}"
 
-  # ─────────────────────────────────────────────────────────────────────
-  # OPENCLAW-MESHNET: Isolated NordVPN mesh network (no internet)
-  # ─────────────────────────────────────────────────────────────────────
-  # Dedicated network for NordVPN meshnet container and Caddy proxy.
-  # Internal (no internet access). Only meshnet-caddy bridges this to
-  # openclaw-egress where services live. No other container can reach
-  # meshnet peers.
-  openclaw-meshnet:
-    driver: bridge
-    internal: true
-    ipam:
-      config:
-        - subnet: "${MESHNET_SUBNET:-172.29.0.0/24}"
-
 volumes:
-  # ─────────────────────────────────────────────────────────────────────
-  # UPTIME-KUMA-DATA: Persistent monitoring state
-  # ─────────────────────────────────────────────────────────────────────
   # ─────────────────────────────────────────────────────────────────────
   # BLOCKY-CONFIG: DNS firewall configuration
   # ─────────────────────────────────────────────────────────────────────
@@ -1150,16 +954,6 @@ volumes:
   tailscale-state:
     driver: local
 
-  # ─────────────────────────────────────────────────────────────────────
-  # NORDVPN-STATE: Persistent NordVPN auth and meshnet state
-  # ─────────────────────────────────────────────────────────────────────
-  # Stores login credentials and WireGuard keys. Persisting this avoids
-  # re-authentication on container restart.
-  nordvpn-state:
-    driver: local
-
-  uptime-kuma-data:
-    driver: local
 
   # ─────────────────────────────────────────────────────────────────────
   # OPENCLAW HOME: Bind-mounted from host (no volume definition needed)

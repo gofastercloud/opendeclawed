@@ -43,10 +43,7 @@ CHAT_URL="https://huggingface.co/bartowski/Llama-3.2-3B-Instruct-GGUF/resolve/ma
 ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:-}"
 VIRUSTOTAL_API_KEY="${VIRUSTOTAL_API_KEY:-}"
 CLOUDFLARE_TOKEN="${CLOUDFLARE_TOKEN:-}"
-NORDVPN_TOKEN="${NORDVPN_TOKEN:-}"
 TELEGRAM_BOT_TOKEN="${TELEGRAM_BOT_TOKEN:-}"
-DISCORD_BOT_TOKEN="${DISCORD_BOT_TOKEN:-}"
-DISCORD_GUILD_ID="${DISCORD_GUILD_ID:-}"
 INGRESS_MODE="${INGRESS_MODE:-local}"
 EGRESS_SUBNET="${EGRESS_SUBNET:-172.28.0.0/24}"
 GATEWAY_IP="${GATEWAY_IP:-172.17.0.1}"
@@ -67,15 +64,12 @@ for arg in "$@"; do
             echo "Environment variables for non-interactive mode:"
             echo "  ANTHROPIC_API_KEY      Anthropic API key (required)"
             echo "  VIRUSTOTAL_API_KEY     VirusTotal API key (recommended)"
-            echo "  INGRESS_MODE           local|tunnel|meshnet|tailscale (default: local)"
+            echo "  INGRESS_MODE           local|tunnel|tailscale (default: local)"
             echo "  CLOUDFLARE_TOKEN       Cloudflare tunnel token (if tunnel)"
-            echo "  NORDVPN_TOKEN          NordVPN token (if meshnet)"
             echo "  TS_AUTHKEY             Tailscale auth key (if tailscale)"
             echo "  TS_HOSTNAME            Tailscale machine name (default: openclaw)"
             echo "  TELEMETRY_ENABLED      true|false (default: false)"
             echo "  TELEGRAM_BOT_TOKEN     Telegram bot token (optional)"
-            echo "  DISCORD_BOT_TOKEN      Discord bot token (optional)"
-            echo "  DISCORD_GUILD_ID       Discord server ID (if Discord)"
             exit 0
             ;;
     esac
@@ -147,23 +141,6 @@ validate_format() {
         TELEGRAM_BOT_TOKEN)
             if [[ ! "${value}" =~ ^[0-9]+:.+ ]]; then
                 warn "Doesn't look like a Telegram bot token (expected 123456789:ABC...)"
-                read -rp "  Accept anyway? [y/N]: " override
-                [[ "${override}" =~ ^[Yy] ]] && return 0
-                return 1
-            fi
-            ;;
-        DISCORD_BOT_TOKEN)
-            # Discord tokens are base64-ish, typically 60-80 chars with dots
-            if [[ ${#value} -lt 50 ]]; then
-                warn "Discord bot token seems too short (typically 60+ chars)"
-                read -rp "  Accept anyway? [y/N]: " override
-                [[ "${override}" =~ ^[Yy] ]] && return 0
-                return 1
-            fi
-            ;;
-        NORDVPN_TOKEN)
-            if [[ ${#value} -lt 20 ]]; then
-                warn "NordVPN token seems too short"
                 read -rp "  Accept anyway? [y/N]: " override
                 [[ "${override}" =~ ^[Yy] ]] && return 0
                 return 1
@@ -382,34 +359,6 @@ except: pass
 " "${OPENCLAW_JSON}" 2>/dev/null) || true
         [ -n "${TELEGRAM_BOT_TOKEN}" ] && info "Loaded Telegram bot token from openclaw.json"
     fi
-    if [ -z "${DISCORD_BOT_TOKEN:-}" ]; then
-        DISCORD_BOT_TOKEN=$(python3 -c "
-import json, sys
-try:
-    with open(sys.argv[1]) as f:
-        cfg = json.load(f)
-    d = cfg.get('channels',{}).get('discord',{})
-    print(d.get('token','') or d.get('botToken',''))
-except: pass
-" "${OPENCLAW_JSON}" 2>/dev/null) || true
-        [ -n "${DISCORD_BOT_TOKEN}" ] && info "Loaded Discord bot token from openclaw.json"
-    fi
-    if [ -z "${DISCORD_GUILD_ID:-}" ]; then
-        DISCORD_GUILD_ID=$(python3 -c "
-import json, sys
-try:
-    with open(sys.argv[1]) as f:
-        cfg = json.load(f)
-    d = cfg.get('channels',{}).get('discord',{})
-    # 2026.x: guilds dict; legacy: guildId string
-    guilds = d.get('guilds',{})
-    if guilds:
-        print(list(guilds.keys())[0])
-    else:
-        print(d.get('guildId',''))
-except: pass
-" "${OPENCLAW_JSON}" 2>/dev/null) || true
-    fi
 fi
 
 ###############################################################################
@@ -439,13 +388,12 @@ ask_secret VIRUSTOTAL_API_KEY "VirusTotal API key" optional VIRUSTOTAL_API_KEY
 # ── Ingress ──
 echo ""
 echo -e "  ${BOLD}── Ingress mode ──${NC}"
-if [ "${INTERACTIVE}" = true ] && [ -z "${CLOUDFLARE_TOKEN}" ] && [ -z "${NORDVPN_TOKEN}" ]; then
+if [ "${INTERACTIVE}" = true ] && [ -z "${CLOUDFLARE_TOKEN}" ]; then
     echo ""
     echo "  How will you access OpenClaw?"
     echo "    1) local     — 127.0.0.1 only (default, most secure)"
     echo "    2) tunnel    — Cloudflare Tunnel (zero exposed ports, internet-accessible)"
-    echo "    3) meshnet   — NordVPN Meshnet (P2P, no public DNS)"
-    echo "    4) tailscale — Tailscale mesh VPN (WireGuard, ACL-controlled)"
+    echo "    3) tailscale — Tailscale mesh VPN (WireGuard, ACL-controlled)"
     echo ""
     read -rp "  Choose [1]: " ingress_choice
     case "${ingress_choice}" in
@@ -455,12 +403,7 @@ if [ "${INTERACTIVE}" = true ] && [ -z "${CLOUDFLARE_TOKEN}" ] && [ -z "${NORDVP
             dim "See docs/setup-guide.md for Cloudflare Access + GitHub OAuth setup."
             ask_secret CLOUDFLARE_TOKEN "Cloudflare Tunnel token (eyJ...)" required CLOUDFLARE_TOKEN
             ;;
-        3|meshnet)
-            INGRESS_MODE="meshnet"
-            dim "Get token at: https://my.nordaccount.com → Services → NordVPN → Access Token"
-            ask_secret NORDVPN_TOKEN "NordVPN service token" required NORDVPN_TOKEN
-            ;;
-        4|tailscale)
+        3|tailscale)
             INGRESS_MODE="tailscale"
             dim "Generate an auth key at: https://login.tailscale.com/admin/settings/keys"
             dim "Use a reusable key for unattended restarts. See docs/setup-guide.md."
@@ -478,7 +421,6 @@ if [ "${INTERACTIVE}" = true ] && [ -z "${CLOUDFLARE_TOKEN}" ] && [ -z "${NORDVP
     esac
 else
     if [ -n "${CLOUDFLARE_TOKEN}" ]; then INGRESS_MODE="tunnel"; fi
-    if [ -n "${NORDVPN_TOKEN}" ]; then INGRESS_MODE="meshnet"; fi
     if [ -n "${TS_AUTHKEY}" ]; then INGRESS_MODE="tailscale"; fi
     info "Ingress: ${INGRESS_MODE} (from environment)"
 fi
@@ -496,19 +438,6 @@ if [ "${INTERACTIVE}" = true ] && [ -z "${TELEGRAM_BOT_TOKEN}" ]; then
         dim "Create a bot: message @BotFather on Telegram → /newbot"
         dim "Then /setjoingroups → Disable, /setprivacy → Enable"
         ask_secret TELEGRAM_BOT_TOKEN "Telegram bot token (123456789:ABC...)" optional TELEGRAM_BOT_TOKEN
-    fi
-fi
-
-# Discord
-if [ "${INTERACTIVE}" = true ] && [ -z "${DISCORD_BOT_TOKEN}" ]; then
-    echo ""
-    read -rp "  Set up Discord bot? [y/N]: " setup_discord
-    if [[ "${setup_discord}" =~ ^[Yy] ]]; then
-        dim "Create at: https://discord.com/developers/applications → New App → Bot"
-        dim "Enable Message Content Intent under Privileged Gateway Intents."
-        ask_secret DISCORD_BOT_TOKEN "Discord bot token" optional DISCORD_BOT_TOKEN
-        ask_plain  DISCORD_GUILD_ID   "Discord server (guild) ID"
-        [ -n "${DISCORD_GUILD_ID}" ] && save_env DISCORD_GUILD_ID "${DISCORD_GUILD_ID}"
     fi
 fi
 
@@ -654,8 +583,6 @@ else
     # backslashes, and $ chars in API keys, and is an injection vector.
     ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY}" \
     TELEGRAM_BOT_TOKEN="${TELEGRAM_BOT_TOKEN}" \
-    DISCORD_BOT_TOKEN="${DISCORD_BOT_TOKEN}" \
-    DISCORD_GUILD_ID="${DISCORD_GUILD_ID}" \
     INGRESS_MODE="${INGRESS_MODE}" \
     LITELLM_PORT="${LITELLM_PORT:-4000}" \
     LITELLM_MASTER_KEY="${LITELLM_MASTER_KEY:-sk-opendeclawed-internal}" \
@@ -740,11 +667,16 @@ config = {
     "gateway": {
         "port": 18789,
         "mode": "local",
-        "bind": "loopback" if ingress_mode == "local" else "lan",
+        "bind": "lan",
+        "controlUi": {
+            "enabled": True,
+            "allowInsecureAuth": True
+        },
         "auth": {
             "mode": "token",
             "token": gateway_token
         },
+        "trustedProxies": ["172.28.0.0/24", "172.17.0.0/16", "192.168.65.0/24"],
         "tailscale": {
             "mode": "serve" if ingress_mode == "tailscale" else "off",
             "resetOnExit": False
@@ -759,40 +691,24 @@ if api_key:
 
 # Inject channel configs with secure defaults
 telegram_token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
-discord_token  = os.environ.get("DISCORD_BOT_TOKEN", "")
-discord_guild  = os.environ.get("DISCORD_GUILD_ID", "")
 
-if telegram_token or discord_token:
+if telegram_token:
     config["channels"] = {}
     config["plugins"] = {"entries": {}}
 
-    if telegram_token:
-        config["channels"]["telegram"] = {
-            "enabled": True,
-            "dmPolicy": "pairing",
-            "botToken": telegram_token,
-            "groupPolicy": "allowlist",
-            "streamMode": "partial"
-        }
-        config["plugins"]["entries"]["telegram"] = {"enabled": True}
-
-    if discord_token:
-        discord_cfg = {
-            "enabled": True,
-            "token": discord_token,
-            "groupPolicy": "allowlist"
-        }
-        if discord_guild:
-            discord_cfg["guilds"] = {
-                discord_guild: {"requireMention": True}
-            }
-        config["channels"]["discord"] = discord_cfg
-        config["plugins"]["entries"]["discord"] = {"enabled": True}
+    config["channels"]["telegram"] = {
+        "enabled": True,
+        "dmPolicy": "pairing",
+        "botToken": telegram_token,
+        "groupPolicy": "allowlist",
+        "streamMode": "partial"
+    }
+    config["plugins"]["entries"]["telegram"] = {"enabled": True}
 
 # Remove empty env/plugins if nothing was set
 if not config["env"]:
     del config["env"]
-if "plugins" in config and not config["plugins"]["entries"]:
+if "plugins" in config and not config["plugins"].get("entries"):
     del config["plugins"]
 
 out_path = os.environ.get("OPENCLAW_JSON_PATH",
@@ -933,9 +849,19 @@ LITELLMEOF
 info "Written: ${LITELLM_CONFIG}"
 save_env LITELLM_PORT "${LITELLM_PORT}"
 
+# ── Populate blocky DNS config volume ──
+# Create the volume and copy the bundled config into it.
+# Blocky needs /app/config/config.yml inside the container.
+info "Populating blocky DNS config volume..."
+docker volume create opendeclawed_blocky-config >/dev/null 2>&1 || true
+docker run --rm \
+    -v "${REPO_DIR}/examples/blocky-config.yml:/src/config.yml:ro" \
+    -v opendeclawed_blocky-config:/config \
+    alpine cp /src/config.yml /config/config.yml
+info "Blocky config ready."
+
 case "${INGRESS_MODE}" in
     tunnel)    PROFILES="${PROFILES} --profile tunnel" ;;
-    meshnet)   PROFILES="${PROFILES} --profile meshnet" ;;
     tailscale) PROFILES="${PROFILES} --profile tailscale" ;;
 esac
 
@@ -943,7 +869,7 @@ esac
 ENABLE_MONITOR="${ENABLE_MONITOR:-}"
 if [ "${INTERACTIVE}" = true ] && [ -z "${ENABLE_MONITOR}" ]; then
     echo ""
-    read -rp "  Enable monitoring (Uptime Kuma + Watchtower + Dozzle logs)? [Y/n]: " enable_mon
+    read -rp "  Enable monitoring (Watchtower auto-updates + Dozzle log viewer)? [Y/n]: " enable_mon
     if [[ ! "${enable_mon}" =~ ^[Nn] ]]; then
         PROFILES="${PROFILES} --profile monitor"
     fi
@@ -973,6 +899,137 @@ if [ -n "${GATEWAY_ID}" ]; then
     else
         info "FIREWALL CHECK PASSED — LAN unreachable from containers"
     fi
+fi
+
+# ── Auto-pair CLI device ─────────────────────────────────────────────
+# The CLI generates a keypair on first connection and sends a pairing
+# request to the gateway. Without approval, CLI commands fail with
+# "pairing required". We automate this so the CLI works immediately.
+#
+# Flow:
+#   1. Run CLI briefly — it connects to gateway, gets rejected, but the
+#      pairing request lands in ~/.openclaw/devices/pending.json
+#   2. Read the pending request from the bind-mounted host filesystem
+#   3. Approve it by writing to paired.json (gateway reads on next connect)
+OPENCLAW_IMAGE="${OPENCLAW_IMAGE:-openclaw:local}"
+if docker image inspect "${OPENCLAW_IMAGE}" >/dev/null 2>&1; then
+    info "Auto-pairing CLI device..."
+    mkdir -p "${CONFIG_DIR}/devices"
+
+    # Wait for gateway to be healthy (healthcheck: curl /health)
+    printf "  Waiting for gateway health"
+    CLI_AUTOPAIR_SKIP=""
+    for i in $(seq 1 30); do
+        if docker exec opendeclawed-gateway curl -sf http://127.0.0.1:${GATEWAY_PORT:-18789}/health >/dev/null 2>&1; then
+            echo " ready."
+            break
+        fi
+        printf "."
+        sleep 2
+        if [ "$i" = "30" ]; then
+            echo ""
+            warn "Gateway not healthy after 60s — skipping CLI auto-pair."
+            CLI_AUTOPAIR_SKIP=true
+        fi
+    done
+
+    if [ "${CLI_AUTOPAIR_SKIP:-}" != "true" ]; then
+        # Run CLI briefly — the connection attempt creates the pairing request.
+        # The command will fail (pairing required), but that's expected.
+        docker compose -f "${COMPOSE_FILE}" --env-file "${ENV_FILE}" \
+            --profile cli run --rm -T openclaw-cli nodes status >/dev/null 2>&1 &
+        CLI_PAIR_PID=$!
+
+        # Wait for pending request to appear (up to 15s)
+        PENDING_FILE="${CONFIG_DIR}/devices/pending.json"
+        PAIRED_FILE="${CONFIG_DIR}/devices/paired.json"
+
+        for i in $(seq 1 15); do
+            if [ -f "${PENDING_FILE}" ] && \
+               python3 -c "
+import json, sys
+try:
+    with open(sys.argv[1]) as f:
+        d = json.load(f)
+    # pending.json is {deviceId: {device...}} — check for non-empty dict entries
+    sys.exit(0 if isinstance(d, dict) and any(isinstance(v, dict) and v for v in d.values()) else 1)
+except:
+    sys.exit(1)
+" "${PENDING_FILE}" 2>/dev/null; then
+                break
+            fi
+            sleep 1
+        done
+
+        # Clean up the CLI process
+        kill "${CLI_PAIR_PID}" 2>/dev/null || true
+        wait "${CLI_PAIR_PID}" 2>/dev/null || true
+
+        # Approve pending CLI devices from the host filesystem
+        PENDING_FILE="${PENDING_FILE}" \
+        PAIRED_FILE="${PAIRED_FILE}" \
+        python3 << 'PYEOF'
+import json, os, secrets, time
+
+pending_path = os.environ["PENDING_FILE"]
+paired_path  = os.environ["PAIRED_FILE"]
+
+# Read pending requests
+try:
+    with open(pending_path) as f:
+        pending = json.load(f)
+except (FileNotFoundError, json.JSONDecodeError):
+    pending = {}
+
+if not pending or not any(isinstance(v, dict) and v for v in pending.values()):
+    print("  No pending CLI devices — skipping.")
+    exit(0)
+
+# Read existing paired devices
+try:
+    with open(paired_path) as f:
+        paired = json.load(f)
+except (FileNotFoundError, json.JSONDecodeError):
+    paired = {}
+
+now_ms = int(time.time() * 1000)
+approved = 0
+
+for device_id, device in list(pending.items()):
+    if not isinstance(device, dict):
+        continue
+    # Add required fields for operator-level access
+    device.setdefault("token", secrets.token_hex(32))
+    device.setdefault("role", "operator")
+    device.setdefault("roles", ["operator"])
+    device.setdefault("scopes", [
+        "operator.admin",
+        "operator.approvals",
+        "operator.pairing"
+    ])
+    device.setdefault("name", "gateway-cli")
+    device.setdefault("pairedAt", now_ms)
+    device["lastSeenAt"] = now_ms
+    paired[device_id] = device
+    approved += 1
+
+if approved > 0:
+    with open(paired_path, "w") as f:
+        json.dump(paired, f, indent=2)
+    try:
+        os.chmod(paired_path, 0o600)
+    except OSError:
+        pass
+    # Clear pending
+    with open(pending_path, "w") as f:
+        json.dump({}, f)
+    print(f"  Auto-approved {approved} CLI device(s).")
+else:
+    print("  No CLI devices found in pending requests.")
+PYEOF
+    fi
+else
+    dim "OpenClaw image not found — skipping CLI auto-pair."
 fi
 
 # Secrets scan — verify nothing leaked into tracked files
@@ -1017,28 +1074,12 @@ detect_ingress_ip() {
                 warn "Tailscale not connected yet. Check: docker logs opendeclawed-tailscale"
             fi
             ;;
-        meshnet)
-            printf "  Waiting for NordVPN meshnet"
-            while [ "${elapsed}" -lt "${max_wait}" ]; do
-                MESH_IP=$(docker exec opendeclawed-nordvpn nordvpn meshnet peer list 2>/dev/null \
-                    | grep -oE 'Address: [0-9.]+' | head -1 | awk '{print $2}') && [ -n "${MESH_IP}" ] && break
-                printf "."
-                sleep 2
-                elapsed=$((elapsed + 2))
-            done
-            echo ""
-            if [ -n "${MESH_IP:-}" ]; then
-                info "Meshnet IP: ${MESH_IP}"
-            else
-                warn "Meshnet not ready yet. Check: docker logs opendeclawed-nordvpn"
-            fi
-            ;;
     esac
 }
 
 # Run detection for active ingress mode
 case "${INGRESS_MODE}" in
-    tailscale|meshnet) detect_ingress_ip "${INGRESS_MODE}" ;;
+    tailscale) detect_ingress_ip "${INGRESS_MODE}" ;;
 esac
 
 ###############################################################################
@@ -1056,14 +1097,10 @@ echo "    Anthropic API key:  ~/.openclaw/openclaw.json + .env"
 echo "    VirusTotal API key: .env"
 [ -n "${CLOUDFLARE_TOKEN}" ] && \
 echo "    Cloudflare token:   .env"
-[ -n "${NORDVPN_TOKEN}" ] && \
-echo "    NordVPN token:      .env"
 [ -n "${TS_AUTHKEY}" ] && \
 echo "    Tailscale auth key: .env"
 [ -n "${TELEGRAM_BOT_TOKEN}" ] && \
 echo "    Telegram bot token: ~/.openclaw/openclaw.json + .env"
-[ -n "${DISCORD_BOT_TOKEN}" ] && \
-echo "    Discord bot token:  ~/.openclaw/openclaw.json + .env"
 echo "    Gateway token:      ~/.openclaw/.gateway-token + .env"
 echo ""
 echo "  File permissions:"
@@ -1077,35 +1114,19 @@ echo ""
 case "${INGRESS_MODE}" in
     local)
         echo "  Access URLs:"
-        echo "    Gateway:      http://127.0.0.1:${GATEWAY_PORT:-18789}/"
-        echo "    Uptime Kuma:  http://127.0.0.1:${KUMA_PORT:-3001}/"
+        echo "    Dashboard:    http://localhost:${GATEWAY_PORT:-18789}/?token=${OPENCLAW_GATEWAY_TOKEN}"
         echo "    Dozzle Logs:  http://127.0.0.1:${DOZZLE_PORT:-5005}/"
         ;;
     tunnel)
         TUNNEL_HOST="${CLOUDFLARE_TUNNEL_ROUTE:-openclaw.example.com}"
         echo "  Access URLs:"
         echo "    Gateway:      https://${TUNNEL_HOST}/"
-        echo "    Uptime Kuma:  https://${TUNNEL_HOST}/kuma/"
-        echo "    Dozzle Logs:  https://${TUNNEL_HOST}/logs/"
         ;;
     tailscale)
         BASE="${TS_FQDN:-${TS_HOSTNAME:-openclaw}.<your-tailnet>.ts.net}"
         echo "  Access URLs:"
         echo "    Gateway:      https://${BASE}/"
-        echo "    Uptime Kuma:  https://${BASE}/kuma/"
-        echo "    Dozzle Logs:  https://${BASE}/logs/"
         [ -n "${TS_IP:-}" ] && echo "    Tailscale IP: ${TS_IP}"
-        ;;
-    meshnet)
-        echo "  Access URLs:"
-        if [ -n "${MESH_IP:-}" ]; then
-            echo "    Gateway:      https://${MESH_IP}/"
-            echo "    Uptime Kuma:  https://${MESH_IP}/kuma/"
-            echo "    Dozzle Logs:  https://${MESH_IP}/logs/"
-            echo "    Meshnet IP:   ${MESH_IP}"
-        else
-            echo "    (Meshnet IP not yet available — check docker logs opendeclawed-nordvpn)"
-        fi
         ;;
 esac
 echo "  Telemetry: ${TELEMETRY_ENABLED}"
@@ -1122,7 +1143,6 @@ echo "    Install: \"install skill <name>\" via Telegram (safe-install skill)"
 if [[ "${PROFILES}" == *"monitor"* ]]; then
 echo ""
 echo "  Monitoring:"
-echo "    Uptime Kuma:  http://127.0.0.1:${KUMA_PORT:-3001}/"
-echo "    Log viewer:   http://127.0.0.1:${DOZZLE_PORT:-5005}/"
+echo "    Dozzle Logs:  http://127.0.0.1:${DOZZLE_PORT:-5005}/"
 fi
 echo "======================================================================"

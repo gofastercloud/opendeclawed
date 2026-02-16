@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-OpenDeclawed is a security-hardened Docker deployment for OpenClaw, an AI agent platform. It combines local LLM inference (llama.cpp) with OpenAI-compatible routing (LiteLLM), secured behind kernel-level egress control, DNS filtering (Blocky), container hardening, and multiple private ingress options (Cloudflare Tunnel, Tailscale, NordVPN Meshnet).
+OpenDeclawed is a security-hardened Docker deployment for OpenClaw, an AI agent platform. It combines local LLM inference (llama.cpp) with OpenAI-compatible routing (LiteLLM), secured behind kernel-level egress control, DNS filtering (Blocky), container hardening, and multiple private ingress options (Cloudflare Tunnel, Tailscale).
 
 ## Common Commands
 
@@ -21,8 +21,7 @@ docker-compose up -d
 # Run with profiles (combinable)
 docker-compose --profile tunnel up -d      # Cloudflare Tunnel
 docker-compose --profile tailscale up -d   # Tailscale mesh VPN
-docker-compose --profile meshnet up -d     # NordVPN Meshnet
-docker-compose --profile monitor up -d     # Uptime Kuma + Watchtower + Dozzle
+docker-compose --profile monitor up -d     # Watchtower + Dozzle log viewer
 docker-compose --profile cli run openclaw-cli bash
 
 # Validate compose syntax
@@ -40,14 +39,11 @@ docker-compose down -v  # Remove volumes too
 
 ## Architecture
 
-**Network topology** — three isolated Docker networks:
+**Network topology** — two isolated Docker networks:
 - `openclaw-internal` (172.27.0.0/24, `internal: true`): llama-embed, llama-chat, blocky — no internet access
-- `openclaw-egress` (172.28.0.0/24): gateway, litellm, cloudflared, tailscale, kuma, dozzle — egress-firewall controlled
-- `openclaw-meshnet` (172.29.0.0/24, `internal: true`): nordvpn-meshnet + meshnet-caddy only — isolated mesh ingress
+- `openclaw-egress` (172.28.0.0/24): gateway, litellm, cloudflared, tailscale, dozzle — egress-firewall controlled
 
-**Request flow**: External → Cloudflare Tunnel/Tailscale/NordVPN Meshnet → openclaw-gateway:18789 → LiteLLM:4000 → llama-chat:8091 / llama-embed:8090
-
-**Dashboard proxying**: All ingress methods proxy the same paths: `/` (gateway), `/kuma/` (Uptime Kuma), `/logs/` (Dozzle). Dashboards are never internet-accessible.
+**Request flow**: External → Cloudflare Tunnel/Tailscale → openclaw-gateway:18789 → LiteLLM:4000 → llama-chat:8091 / llama-embed:8090
 
 **Egress firewall**: Persistent sidecar (not one-shot init) with 60s iptables re-check loop on DOCKER-USER chain. Drops RFC1918, link-local, multicast. All containers use blocky:53 (static IP 172.27.0.53) for DNS-level threat filtering.
 
@@ -55,7 +51,7 @@ docker-compose down -v  # Remove volumes too
 
 ## Key Files
 
-- `docker-compose.yml` — Main orchestration (15 services, ~1100 lines, heavily commented)
+- `docker-compose.yml` — Main orchestration (~1000 lines, heavily commented)
 - `.env.example` — Master config template (40+ parameterized variables with defaults)
 - `litellm_config.yaml` — LLM provider routing config
 - `scripts/setup.sh` — Interactive/non-interactive setup (~1000 lines)
@@ -64,9 +60,6 @@ docker-compose down -v  # Remove volumes too
 - `examples/openclaw.example.json` — Agent configuration template
 - `examples/skills.allowlist.json` — Skills vetting allowlist (SHA256 + VirusTotal)
 - `examples/skills/safe-install/safe_install.py` — Skill vetting pipeline (static analysis → VirusTotal → allowlist)
-- `nordvpn/Dockerfile` — NordVPN meshnet container (Debian slim + CLI)
-- `nordvpn/entrypoint.sh` — Meshnet login, enable, iptables DNAT to Caddy
-- `nordvpn/Caddyfile` — TLS reverse proxy for meshnet ingress
 
 ## Security Patterns (Required)
 
@@ -79,7 +72,6 @@ These patterns are enforced by the project. Follow them in all contributions:
 5. **Shell injection prevention** — use `printf -v "$var"` instead of `eval`; quoted heredocs (`'EOF'`) for secrets
 6. **TOCTOU-safe installation** — verify then install from verified bytes, never re-download
 7. **Zip-slip protection** — validate archive paths with `os.path.normpath`; reject `../` and absolute paths
-8. **Meshnet network isolation** — NordVPN meshnet container is isolated to `openclaw-meshnet`; Caddy is the sole bridge to service networks
 
 ## Tech Stack
 

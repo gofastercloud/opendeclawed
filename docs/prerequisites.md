@@ -79,18 +79,7 @@ Required only if you want internet-accessible OpenClaw with zero exposed ports. 
 
 For authentication, set up **Cloudflare Access** with GitHub OAuth — see `docs/setup-guide.md` for the full walkthrough.
 
-### 4. NordVPN Token
-
-Required only if using `--profile meshnet` for private Meshnet access (no public DNS, no third-party trust).
-
-1. Log in at [my.nordaccount.com](https://my.nordaccount.com)
-2. **Services → NordVPN → Access Token**
-3. Generate a new token and copy it
-4. Variable: `NORDVPN_TOKEN` in `.env`
-
-Meshnet must be enabled on all devices you want to access OpenClaw from.
-
-### 5. Tailscale Auth Key
+### 4. Tailscale Auth Key
 
 Required only if you prefer WireGuard-based mesh VPN access. Tailscale is zero-config and provides automatic HTTPS.
 
@@ -102,7 +91,7 @@ Required only if you prefer WireGuard-based mesh VPN access. Tailscale is zero-c
 
 See `docs/setup-guide.md` for ACL configuration and Tailscale Serve setup.
 
-### 6. Telegram Bot Token
+### 5. Telegram Bot Token
 
 Required if you want to interact with OpenClaw via Telegram (the recommended messaging channel — simplest to set up).
 
@@ -119,17 +108,6 @@ Lock down the bot immediately:
 /setprivacy     → Enable
 ```
 
-### 7. Discord Bot Token
-
-Alternative to Telegram. More setup steps but works well if you already use Discord.
-
-1. Go to [discord.com/developers/applications](https://discord.com/developers/applications)
-2. **New Application** → name it `OpenClaw`
-3. **Bot** tab → **Add Bot** → copy the **Bot Token**
-4. Enable **Message Content Intent** under Privileged Gateway Intents
-5. **OAuth2 → URL Generator** → scopes: `bot`, `applications.commands` → permissions: Send Messages, Read Message History, View Channels
-6. Use the generated URL to invite the bot to a **private** server
-
 ---
 
 ## Blocky DNS Firewall Config
@@ -141,7 +119,7 @@ mkdir -p ~/.openclaw/blocky
 cp examples/blocky-config.yml ~/.openclaw/blocky/config.yml
 ```
 
-The default config blocks malware, phishing, C2, and cryptomining domains while allowing known-good API endpoints (Anthropic, VirusTotal, Telegram, Discord, Cloudflare, HuggingFace, GitHub). Customize the allowlist in `~/.openclaw/blocky/config.yml` if your skills need to reach additional domains.
+The default config blocks malware, phishing, C2, and cryptomining domains while allowing known-good API endpoints (Anthropic, VirusTotal, Telegram, Cloudflare, HuggingFace, GitHub). Customize the allowlist in `~/.openclaw/blocky/config.yml` if your skills need to reach additional domains.
 
 Upstream DNS uses DNS-over-HTTPS (Cloudflare + Quad9) so no plaintext DNS queries leak to your ISP.
 
@@ -196,10 +174,8 @@ chmod 600 ~/.openclaw/skills.allowlist.json
 | Anthropic API key | `~/.openclaw/openclaw.json` | `setup.sh` |
 | VirusTotal API key | `.env` (`VIRUSTOTAL_API_KEY`) | You, manually |
 | Cloudflare tunnel token | `.env` (`CLOUDFLARE_TOKEN`) | You, manually |
-| NordVPN token | `.env` (`NORDVPN_TOKEN`) | You, manually |
 | Tailscale auth key | `.env` (`TS_AUTHKEY`) | `setup.sh` |
 | Telegram bot token | `~/.openclaw/openclaw.json` | `setup.sh` |
-| Discord bot token | `~/.openclaw/openclaw.json` | `setup.sh` |
 | Gateway pairing secret | `~/.openclaw/openclaw.json` | `setup.sh` (auto-generated) |
 
 ### Never commit secrets
@@ -256,9 +232,8 @@ Before running `setup.sh`, confirm:
 - [ ] VirusTotal API key ready (free tier is fine)
 - [ ] Model files downloaded to `./models/`
 - [ ] Blocky DNS config copied to `~/.openclaw/blocky/config.yml`
-- [ ] Ingress method chosen: local-only, Cloudflare tunnel, NordVPN Meshnet, or Tailscale
+- [ ] Ingress method chosen: local-only, Cloudflare tunnel, or Tailscale
 - [ ] If tunnel: Cloudflare token and domain configured
-- [ ] If Meshnet: NordVPN token ready
 - [ ] If Tailscale: Auth key generated (reusable recommended)
 - [ ] If Telegram: Bot created and locked down via @BotFather
 - [ ] `.env` file created from `.env.example` with your values

@@ -5,11 +5,11 @@
 1. [Architecture Overview](#architecture-overview)
 2. [Prerequisites](#prerequisites)
 3. [Ingress Option A: Cloudflare Tunnel + GitHub OAuth](#ingress-option-a-cloudflare-tunnel--github-oauth)
-4. [Ingress Option B: NordVPN Meshnet](#ingress-option-b-nordvpn-meshnet)
-5. [Dedicated Gmail Account Setup](#dedicated-gmail-account)
-6. [Container Image Hardening](#container-image-hardening)
-7. [Messaging Integration: Telegram](#messaging-telegram)
-8. [Messaging Integration: Discord](#messaging-discord)
+4. [Ingress Option B: Tailscale Mesh VPN](#ingress-option-b-tailscale-mesh-vpn)
+5. [Onboarding Wizard](#onboarding-wizard)
+6. [Dedicated Gmail Account Setup](#dedicated-gmail-account)
+7. [Container Image Hardening](#container-image-hardening)
+8. [Messaging Integration: Telegram](#messaging-telegram)
 9. [Messaging Integration: WhatsApp](#messaging-whatsapp)
 10. [Additional Security Hardening](#additional-security-hardening)
 11. [Operational Security Checklist](#operational-security-checklist)
@@ -27,17 +27,17 @@
                      │    Internet → CF Edge → GitHub OAuth │
                      │    → cloudflared → gateway           │
                      │                                      │
-                     │  Option B: NordVPN Meshnet           │
-                     │    Your device → Meshnet P2P tunnel  │
-                     │    → nordvpn container → gateway     │
-                     │    (never touches public internet)   │
+                     │  Option B: Tailscale Mesh VPN        │
+                     │    Your device → WireGuard tunnel    │
+                     │    → tailscale container → gateway   │
+                     │    (no public DNS, ACL-controlled)   │
                      └──────────┬───────────────────────────┘
                                 │
          ┌──────────────────────┼──────────────────────┐
          │      openclaw-egress network                │
          │  ┌────────────┐  ┌──────────────────────┐   │
          │  │ cloudflared │  │  openclaw-gateway    │   │
-         │  │ OR nordvpn  │  │  (Anthropic API out) │   │
+         │  │ OR tailscale│  │  (Anthropic API out) │   │
          │  └────────────┘  └──────────┬───────────┘   │
          │                             │               │
          │  egress-firewall: persistent sidecar         │
@@ -62,7 +62,7 @@
 - Docker Compose V2 (included with OrbStack)
 - ~10GB disk for models + containers
 - An Anthropic API key OR Claude Pro/Max subscription
-- A domain on Cloudflare (Option A) OR NordVPN subscription (Option B) OR Tailscale account (Option C)
+- A domain on Cloudflare (Option A) OR Tailscale account (Option B)
 
 ---
 
@@ -122,84 +122,17 @@ The script will prompt for your tunnel token and configure everything.
 
 ### Accessing dashboards
 
-Cloudflare Tunnel routes dashboard paths alongside the gateway:
+Cloudflare Tunnel routes the gateway alongside any additional services:
 
 | Dashboard | URL |
 |---|---|
 | OpenClaw Gateway | `https://openclaw.yourdomain.com/` |
-| Uptime Kuma | `https://openclaw.yourdomain.com/kuma/` |
-| Dozzle Logs | `https://openclaw.yourdomain.com/logs/` |
 
-All paths are protected by your Cloudflare Access policy (GitHub OAuth).
+All paths are protected by your Cloudflare Access policy (GitHub OAuth). Dozzle logs are available locally at `http://127.0.0.1:5005` when the monitor profile is enabled.
 
 ---
 
-## Ingress Option B: NordVPN Meshnet
-
-This is the "private access" option. Your OpenClaw instance gets its own Meshnet IP address, accessible only from your other NordVPN Meshnet devices. Traffic never touches the public internet — it's a direct P2P encrypted tunnel between your devices.
-
-### Why this is arguably more secure than Cloudflare
-
-- **Zero public attack surface**: No DNS record, no public hostname, nothing to discover or probe
-- **No third-party trust**: Traffic doesn't flow through Cloudflare's infrastructure
-- **P2P encrypted**: NordLynx (WireGuard) directly between your devices
-- **IP masking**: OpenClaw's outbound API calls exit through NordVPN, not your home IP
-- **No authentication layer needed**: Only your Meshnet peers can reach it at all
-
-### Why Cloudflare may still be better
-
-- **Mobile access**: Meshnet requires NordVPN running on every client device
-- **Sharing**: Can't easily give someone else access without adding them to your Meshnet
-- **Uptime**: If your home network goes down, Cloudflare can show a friendly error page; Meshnet just fails silently
-
-### Step 1: Get your NordVPN token
-
-1. Log in at https://my.nordaccount.com
-2. Go to **Services → NordVPN → Access Token**
-3. Generate a new token and copy it
-4. Add to your `.env`: `NORDVPN_TOKEN=<token>`
-
-### Step 2: Run the setup script
-
-```bash
-chmod +x scripts/setup.sh && ./scripts/setup.sh
-```
-
-Choose option **3 (meshnet)** when prompted for ingress mode. The script will ask for your NordVPN token if not already in `.env`.
-
-### Step 3: Start with the meshnet profile
-
-```bash
-docker compose --profile meshnet up -d
-```
-
-This starts the NordVPN container on an isolated `openclaw-meshnet` network plus a Caddy reverse proxy that bridges meshnet traffic to your services. The NordVPN container is the only thing exposed to meshnet peers; Caddy is the sole path from meshnet into the service network.
-
-### Step 4: Find your meshnet IP
-
-The setup script detects and displays the meshnet IP at startup. You can also find it manually:
-
-```bash
-docker exec opendeclawed-nordvpn nordvpn meshnet peer list
-```
-
-### Step 5: Access your dashboards
-
-All dashboards are proxied through Caddy over HTTPS:
-
-| Dashboard | URL |
-|---|---|
-| OpenClaw Gateway | `https://<meshnet-ip>/` |
-| Uptime Kuma | `https://<meshnet-ip>/kuma/` |
-| Dozzle Logs | `https://<meshnet-ip>/logs/` |
-
-On your phone or laptop, have NordVPN running with Meshnet enabled and navigate to the meshnet IP.
-
-**Note**: Caddy uses self-signed TLS certificates by default. Your browser will show a certificate warning on first visit — this is expected for meshnet access where there is no public CA to issue certificates. You can trust the certificate manually or configure Caddy with your own cert.
-
----
-
-## Ingress Option C: Tailscale Mesh VPN
+## Ingress Option B: Tailscale Mesh VPN
 
 This is the "zero-config mesh" option. Tailscale creates a WireGuard-based mesh VPN between your devices. OpenClaw joins your tailnet as a machine, accessible via HTTPS at `https://openclaw.<your-tailnet>.ts.net`. No public DNS, no port forwarding, no third-party proxy in the data path.
 
@@ -254,7 +187,7 @@ This allows all tailnet members to reach OpenClaw on port 443 only.
 chmod +x setup.sh && ./setup.sh
 ```
 
-Choose option **4 (tailscale)** when prompted for ingress mode. The script will ask for your auth key and hostname.
+Choose option **3 (tailscale)** when prompted for ingress mode. The script will ask for your auth key and hostname.
 
 ### Step 4: Verify and access dashboards
 
@@ -268,13 +201,13 @@ docker logs openclaw-tailscale
 curl https://openclaw.<your-tailnet>.ts.net/health
 ```
 
-Tailscale Serve proxies all dashboard paths over HTTPS automatically:
+Tailscale Serve proxies the gateway over HTTPS automatically:
 
 | Dashboard | URL |
 |---|---|
 | OpenClaw Gateway | `https://openclaw.<your-tailnet>.ts.net/` |
-| Uptime Kuma | `https://openclaw.<your-tailnet>.ts.net/kuma/` |
-| Dozzle Logs | `https://openclaw.<your-tailnet>.ts.net/logs/` |
+
+Dozzle logs are available locally at `http://127.0.0.1:5005` when the monitor profile is enabled.
 
 ---
 
@@ -485,64 +418,6 @@ docker compose run --rm --profile cli openclaw-cli pairing approve telegram <COD
 
 ---
 
-## Messaging: Discord
-
-### Step 1: Create a Discord application + bot
-
-1. Go to https://discord.com/developers/applications
-2. Click **New Application** → name it `OpenClaw`
-3. Go to **Bot** tab → Click **Add Bot**
-4. Copy the **Bot Token**
-5. Under **Privileged Gateway Intents**, enable:
-   - **Message Content Intent** (required to read messages)
-   - **Server Members Intent** (optional, for user resolution)
-
-### Step 2: Invite bot to your server
-
-1. Go to **OAuth2 → URL Generator**
-2. Scopes: `bot`, `applications.commands`
-3. Bot Permissions: `Send Messages`, `Read Message History`, `View Channels`, `Embed Links`, `Attach Files`
-4. Copy the generated URL and open it in your browser
-5. Select your server and authorize
-
-### Step 3: Get your Guild (Server) ID
-
-1. In Discord: **Settings → Advanced → Enable Developer Mode**
-2. Right-click your server name → **Copy Server ID**
-
-### Step 4: Configure in OpenClaw
-
-```json
-{
-  "channels": {
-    "discord": {
-      "enabled": true,
-      "botToken": "<BOT_TOKEN>",
-      "guildId": "<GUILD_ID>",
-      "dmPolicy": "pairing",
-      "allowFrom": []
-    }
-  }
-}
-```
-
-### Step 5: Pair
-
-Message the bot in Discord. Approve the pairing code:
-
-```bash
-docker compose run --rm --profile cli openclaw-cli pairing approve discord <CODE>
-```
-
-### Security notes for Discord
-
-- Create a **private server** for your OpenClaw bot — don't add it to public servers
-- The bot token grants full access to the bot — store securely
-- Discord bot tokens don't expire by default — rotate manually if compromised
-- `dmPolicy: "pairing"` is critical here since Discord bots are publicly discoverable
-
----
-
 ## Messaging: WhatsApp
 
 WhatsApp is the most complex channel. It uses the Baileys library (reverse-engineered WhatsApp Web protocol), not an official API.
@@ -717,7 +592,7 @@ The `blocky` DNS firewall filters all container DNS queries against threat intel
 
 Configuration is in `examples/blocky-config.yml`. Key features:
 - **Blocklists**: StevenBlack/hosts, URLhaus, PhishingArmy, FireBog RPiList, CoinBlockerLists
-- **Allowlist**: Legitimate API domains (Anthropic, VirusTotal, Telegram, Discord, Cloudflare, HuggingFace, GitHub)
+- **Allowlist**: Legitimate API domains (Anthropic, VirusTotal, Telegram, Cloudflare, HuggingFace, GitHub)
 - **DoH upstream**: Cloudflare DNS + Quad9 — no plaintext DNS leaks to your ISP
 - **Query logging**: 7-day retention for forensic analysis
 - **4-hour refresh**: Blocklists auto-update
@@ -732,7 +607,7 @@ cp examples/blocky-config.yml ~/.openclaw/blocky/config.yml
 
 Dozzle provides a real-time web UI for viewing, filtering, and searching container logs. It reads Docker's native json-file logs with zero configuration — no log driver changes, no sidecars, no storage backend.
 
-Dozzle is enabled automatically with the `monitor` profile (same as Uptime Kuma and Watchtower).
+Dozzle is enabled automatically with the `monitor` profile (alongside Watchtower).
 
 ```bash
 # Open the log viewer
@@ -809,7 +684,7 @@ If you have a prosumer router (UniFi, pfSense, OPNsense, MikroTik):
 - [ ] Telemetry is disabled
 - [ ] All secret files are mode 600
 - [ ] Config directory is mode 700
-- [ ] Cloudflare Access or Meshnet access tested from external device
+- [ ] Cloudflare Access or Tailscale access tested from external device
 - [ ] Messaging channels paired and working
 - [ ] Config file checksums recorded
 

@@ -44,7 +44,6 @@ This document details the security hardening mechanisms in OpenDeclawed. The dep
 | Telemetry data exfiltration | Telemetry disabled by default (opt-in); no credentials or PII transmitted when enabled | Low |
 | LiteLLM proxy compromise | Internal network only, stateless (no DB), read-only root, all caps dropped, internal-only master key | Low |
 | Log viewer exposes sensitive data | Dozzle bound to 127.0.0.1, monitor profile only, DOZZLE_FILTER=opendeclawed-*, read-only socket, no analytics | Low |
-| Meshnet peer reaches internal services | NordVPN container isolated to `openclaw-meshnet` network; Caddy is the sole bridge to service network; no other container can route to meshnet peers | Medium |
 | Resource exhaustion (CPU/memory) | Deploy resource limits and reservations on every container | Medium |
 
 ### Not Mitigated (Accepted Risks)
@@ -54,7 +53,7 @@ This document details the security hardening mechanisms in OpenDeclawed. The dep
 - **Egress-firewall privileges**: Requires `network_mode: host` + `NET_ADMIN` — mitigated by Alpine digest pinning + Trivy scanning
 - **docker inspect secret leakage**: Users in the docker group can read env vars via `docker inspect` — mitigated by socket proxy for automated tools
 - **API authentication**: Basic setup has no auth; add Cloudflare Access or reverse proxy
-- **Encryption in transit**: Local-only mode uses unencrypted HTTP; tunnel mode uses HTTPS via Cloudflare; Tailscale mode uses WireGuard + auto-TLS; Meshnet mode uses NordLynx (WireGuard) + Caddy self-signed TLS
+- **Encryption in transit**: Local-only mode uses unencrypted HTTP; tunnel mode uses HTTPS via Cloudflare; Tailscale mode uses WireGuard + auto-TLS
 - **Side-channel attacks**: Timing/power analysis not addressed
 
 ## Kernel-Level Egress Control
@@ -248,10 +247,6 @@ openclaw-egress
 ├── openclaw-gateway (can reach DNS, established/related, inter-container)
 └── cloudflared     (can reach Cloudflare edge, DNS)
 
-openclaw-meshnet (internal=true, profile: meshnet)
-├── nordvpn-meshnet  (meshnet ingress, inbound only from peers)
-└── meshnet-caddy    (TLS reverse proxy, bridges to egress network)
-
 docker0 (host bridge)
 └── Only for Docker infrastructure
 ```
@@ -269,12 +264,6 @@ docker0 (host bridge)
 - Subject to egress firewall rules (no RFC1918)
 - Cloudflared needs access to Cloudflare edge
 - Allows legitimate external traffic with restrictions
-
-**openclaw-meshnet** (internal=true, profile: meshnet):
-- Dedicated network for NordVPN meshnet container
-- No internet route — inbound only from meshnet peers
-- Caddy is the sole bridge between meshnet and egress networks
-- Prevents meshnet peers from reaching internal services directly
 
 ### IP Addressing
 
@@ -425,14 +414,12 @@ Before accepting a credential, the setup script validates it against known patte
 | VirusTotal API key | 64-character hex string |
 | Cloudflare tunnel token | Starts with `eyJ` (base64 JWT) |
 | Telegram bot token | `123456789:ABC...` (numeric ID + colon + alphanumeric) |
-| Discord bot token | 60+ characters |
-| NordVPN token | 20+ characters |
 
 If the format doesn't match, the user is warned and can either re-enter or explicitly accept (for edge cases like OAuth tokens in place of API keys).
 
 **7. Pre-commit secrets detection (TruffleHog)**
 
-TruffleHog scans every commit for leaked credentials before they reach git history. It covers 800+ detector patterns (including Anthropic API keys, Cloudflare tokens, Discord/Telegram bot tokens natively) plus high-entropy string detection.
+TruffleHog scans every commit for leaked credentials before they reach git history. It covers 800+ detector patterns (including Anthropic API keys, Cloudflare tokens, Telegram bot tokens natively) plus high-entropy string detection.
 
 ```bash
 # Install (setup.sh does this automatically)
