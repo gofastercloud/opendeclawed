@@ -24,3 +24,7 @@ volumes/
 
 # Logs
 *.log
+
+# Python bytecode
+__pycache__/
+*.pyc

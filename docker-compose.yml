@@ -281,7 +281,7 @@ services:
       --model /llama-models/${CHAT_MODEL_FILE:-mistral-7b-instruct-v0.2.Q6_K.gguf}
       --host 0.0.0.0
       --threads ${LLAMA_THREADS:-4}
-      --ctx-size ${CHAT_CTX:-4096}
+      --ctx-size ${CHAT_CTX:-32768}
       --port ${CHAT_PORT:-8091}
       --n-gpu-layers ${LLAMA_GPU_LAYERS:-0}
     networks:

@@ -625,21 +625,28 @@ config = {
     },
     "env": {},
     "models": {
+        "mode": "merge",
         "providers": {
             "litellm": {
                 "baseUrl": f"http://litellm:{litellm_port}/v1",
                 "apiKey": litellm_key,
-                "api": "openai-completions",
+                "api": "openai-responses",
                 "models": [
                     {
                         "id": "local/local-chat",
-                        "name": "Local Chat (via LiteLLM)",
-                        "contextWindow": 4096,
+                        "name": "Local Chat (Llama 3.2 3B via LiteLLM)",
+                        "reasoning": False,
+                        "input": ["text"],
+                        "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
+                        "contextWindow": 32768,
                         "maxTokens": 2048
                     },
                     {
                         "id": "local/local-embed",
-                        "name": "Local Embed (via LiteLLM)",
+                        "name": "Local Embed (Nomic v1.5 via LiteLLM)",
+                        "reasoning": False,
+                        "input": ["text"],
+                        "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
                         "contextWindow": 8192,
                         "maxTokens": 512
                     }
@@ -663,7 +670,10 @@ config = {
             "workspace": "/home/node/.openclaw/workspace",
             "heartbeat": {
                 "every": "60m",
-                "target": "last"
+                "model": "anthropic/claude-haiku-4-5-20251001",
+                "target": "last",
+                "includeReasoning": False,
+                "ackMaxChars": 300
             },
             "sandbox": {
                 "mode": "non-main",
