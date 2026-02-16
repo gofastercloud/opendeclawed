@@ -659,6 +659,7 @@ services:
       - meshnet
     networks:
       openclaw-meshnet: {}
+      openclaw-egress: {}      # nordvpnd needs internet for auth + meshnet coordination
     volumes:
       - nordvpn-state:/var/lib/nordvpn
     tmpfs:
@@ -673,15 +674,13 @@ services:
         limits:
           cpus: "${NORDVPN_CPUS:-0.5}"
           memory: "${NORDVPN_MEM:-256m}"
-    # Note: read_only omitted — nordvpnd writes to /var/run, /etc/nordvpn, /dev/net.
-    # Acceptable because this container is isolated to openclaw-meshnet (internal).
-    security_opt:
-      - no-new-privileges:true
-    cap_drop:
-      - ALL
+    # Note: Broader privileges than other containers — nordvpnd manages WireGuard
+    # tunnels, spawns norduserd, and creates network interfaces. Acceptable because
+    # this container is network-isolated to openclaw-meshnet (internal: true).
     cap_add:
       - NET_ADMIN
       - NET_RAW
+      - SYS_MODULE
     logging:
       driver: json-file
       options:

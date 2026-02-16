@@ -37,8 +37,14 @@ for i in $(seq 1 30); do
     sleep 1
 done
 
+# ── Disable telemetry prompt (must happen before login) ───────────
+# NordVPN CLI asks for analytics consent interactively on first run.
+# Disable it non-interactively to prevent the container from hanging.
+nordvpn set analytics off 2>/dev/null || true
+
 # ── Login and enable meshnet ────────────────────────────────────────
-# Token login (non-interactive, no browser)
+# Clear any stale session, then login fresh with token
+nordvpn logout 2>/dev/null || true
 nordvpn login --token "${NORDVPN_TOKEN}"
 
 # Enable meshnet (peer-to-peer, no full VPN tunnel)

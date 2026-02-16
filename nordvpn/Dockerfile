@@ -17,6 +17,9 @@ RUN apt-get update \
     && apt-get autoremove -y \
     && rm -rf /var/lib/apt/lists/*
 
+# Generate a stable machine-id (nordvpnd needs it for device registration)
+RUN cat /proc/sys/kernel/random/uuid | tr -d '-' > /etc/machine-id
+
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 

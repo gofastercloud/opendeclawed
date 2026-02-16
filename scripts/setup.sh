@@ -683,7 +683,7 @@ config = {
         "lastRunAt": now,
         "lastRunVersion": "2026.2.14",
         "lastRunCommand": "onboard",
-        "lastRunMode": ingress_mode
+        "lastRunMode": "local"
     },
     "env": {},
     "models": {
@@ -739,7 +739,7 @@ config = {
     },
     "gateway": {
         "port": 18789,
-        "mode": ingress_mode,
+        "mode": "local",
         "bind": "loopback" if ingress_mode == "local" else "lan",
         "auth": {
             "mode": "token",
