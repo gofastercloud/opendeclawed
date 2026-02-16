@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="images/opendeclawed.png" alt="OpenDeclawed" width="200">
+</p>
+
 # OpenDeclawed
 
 Production-grade, security-hardened Docker deployment for OpenClaw, an AI agent platform. Fully parameterized with sensible defaults, kernel-level egress control, and optional Cloudflare tunnel ingress.
@@ -22,13 +26,16 @@ Production-grade, security-hardened Docker deployment for OpenClaw, an AI agent 
 - **Multiple Deployment Modes**
   - **Local** (default): Gateway on 127.0.0.1:18789
   - **Tunnel** (--profile tunnel): Cloudflare Tunnel, zero exposed ports
-  - **Monitor** (--profile monitor): Uptime Kuma + Watchtower via socket proxy
+  - **Tailscale** (--profile tailscale): Tailscale mesh VPN, WireGuard-based, ACL-controlled
+  - **Meshnet** (--profile meshnet): NordVPN Meshnet, peer-to-peer, no public DNS
+  - **Monitor** (--profile monitor): Uptime Kuma + Watchtower + Dozzle log viewer
   - **CLI** (--profile cli): Interactive shell for onboarding/debugging
 
 - **Production-Ready**
   - Docker Compose v3.9+ with resource limits and reservations
   - Healthchecks with automatic restart (unless-stopped)
   - JSON file logging with rotation (10MB, 3 files)
+  - Dozzle real-time log viewer (search, filter, regex across all containers)
   - Label-gated Watchtower auto-updates
 
 ## Architecture
@@ -194,7 +201,7 @@ GATEWAY_MEM=4g
 
 **GPU-Accelerated (NVIDIA CUDA, 24GB VRAM)**
 ```env
-LLAMA_IMAGE=ghcr.io/ggerganov/llama.cpp:latest-cuda
+LLAMA_IMAGE=ghcr.io/ggml-org/llama.cpp:server-cuda
 LLAMA_THREADS=16
 LLAMA_GPU_LAYERS=40
 LLAMA_EMBED_MEM=2g
@@ -400,7 +407,7 @@ Do NOT open public issues for security vulnerabilities.
 ## References
 
 - OpenClaw: https://github.com/openagentsinc/openclaw
-- llama.cpp: https://github.com/ggerganov/llama.cpp
+- llama.cpp: https://github.com/ggml-org/llama.cpp
 - Docker Compose: https://docs.docker.com/compose/
 - Cloudflare Tunnels: https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/
 - Linux Capabilities: https://man7.org/linux/man-pages/man7/capabilities.7.html
