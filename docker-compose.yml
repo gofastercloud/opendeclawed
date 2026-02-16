@@ -121,6 +121,7 @@ services:
 
         GATEWAY_IP="$${GATEWAY_IP:-172.17.0.1}"
         EGRESS_SUBNET="$${EGRESS_SUBNET:-172.28.0.0/24}"
+        INTERNAL_SUBNET="$${INTERNAL_SUBNET:-172.27.0.0/24}"
 
         install_rules() {
             # Check if our rules are already present (idempotent)
@@ -149,9 +150,13 @@ services:
             iptables -I DOCKER-USER 4 -d $EGRESS_SUBNET -j ACCEPT
             iptables -I DOCKER-USER 5 -s $EGRESS_SUBNET -j ACCEPT
 
+            # ALLOW inter-container (openclaw-internal)
+            iptables -I DOCKER-USER 6 -d $INTERNAL_SUBNET -j ACCEPT
+            iptables -I DOCKER-USER 7 -s $INTERNAL_SUBNET -j ACCEPT
+
             # ALLOW Docker bridge
-            iptables -I DOCKER-USER 6 -d 172.17.0.0/16 -j ACCEPT
-            iptables -I DOCKER-USER 7 -s 172.17.0.0/16 -j ACCEPT
+            iptables -I DOCKER-USER 8 -d 172.17.0.0/16 -j ACCEPT
+            iptables -I DOCKER-USER 9 -s 172.17.0.0/16 -j ACCEPT
 
             # DROP RFC1918
             iptables -A DOCKER-USER -d 10.0.0.0/8 -j DROP
@@ -219,7 +224,6 @@ services:
       --ctx-size ${EMBED_CTX:-2048}
       --port ${EMBED_PORT:-8090}
       --embeddings
-      --embedding-pooling mean
     networks:
       openclaw-internal: {}
     volumes:
@@ -245,6 +249,12 @@ services:
       - ALL
     user: "65534:65534"
     ipc: private
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://127.0.0.1:${EMBED_PORT:-8090}/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
     logging:
       driver: json-file
       options:
@@ -299,6 +309,12 @@ services:
       - ALL
     user: "65534:65534"
     ipc: private
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://127.0.0.1:${CHAT_PORT:-8091}/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
     logging:
       driver: json-file
       options:
@@ -339,7 +355,7 @@ services:
       resources:
         limits:
           cpus: "${LITELLM_CPUS:-1}"
-          memory: "${LITELLM_MEM:-256m}"
+          memory: "${LITELLM_MEM:-512m}"
           pids: 256
         reservations:
           cpus: "0.25"
@@ -673,7 +689,7 @@ services:
       - DISTRIBUTION=0
       - EXEC=0
       - GRPC=0
-      - INFO=0
+      - INFO=1
       - NETWORKS=0
       - NODES=0
       - PLUGINS=0
@@ -690,12 +706,14 @@ services:
           cpus: "0.5"
           memory: "64m"
           pids: 64
-    read_only: true
     security_opt:
       - no-new-privileges:true
     cap_drop:
       - ALL
     # NOTE: user directive omitted — socket proxy needs root to bind port 2375.
+    # NOTE: read_only omitted — entrypoint generates haproxy.cfg from template
+    # at /usr/local/etc/haproxy/ on startup. Mitigated by cap_drop ALL +
+    # no-new-privileges + Docker socket being the actual security boundary.
     ipc: private
     tmpfs:
       - /tmp:size=16m,noexec,nosuid,nodev
@@ -853,13 +871,13 @@ services:
     # SECURITY: No direct Docker socket. Uses socket-proxy (same as Watchtower).
     # Dozzle only needs container list + events for log streaming.
     environment:
-      - DOCKER_HOST=tcp://docker-socket-proxy:2375
+      - DOZZLE_REMOTE_HOST=tcp://docker-socket-proxy:2375
       - DOZZLE_ADDR=:${DOZZLE_PORT:-5005}
       - DOZZLE_LEVEL=info
       - DOZZLE_FILTER=name=opendeclawed-*
       - DOZZLE_NO_ANALYTICS=true
-    dns:
-      - "${BLOCKY_IP:-172.27.0.53}"
+    # NOTE: dns directive omitted — Dozzle needs Docker's embedded DNS (127.0.0.11)
+    # to resolve docker-socket-proxy. Blocky DNS would break service discovery.
     tmpfs:
       - /tmp:size=32m,noexec,nosuid,nodev
     ports:

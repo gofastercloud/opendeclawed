@@ -9,6 +9,7 @@
 # Usage:
 #   Interactive:     ./scripts/setup.sh
 #   Non-interactive: ./scripts/setup.sh --non-interactive
+#   Quick (quiet):   ./scripts/setup.sh -q
 #
 # Non-interactive mode reads all values from environment variables or .env file.
 # Interactive mode prompts for missing values using secure (silent) input for
@@ -54,12 +55,12 @@ TS_HOSTNAME="${TS_HOSTNAME:-openclaw}"
 # ── Parse arguments ───────────────────────────────────────────────────────
 for arg in "$@"; do
     case "$arg" in
-        --non-interactive) INTERACTIVE=false ;;
+        --non-interactive|-q) INTERACTIVE=false ;;
         --help|-h)
-            echo "Usage: $0 [--non-interactive] [--help]"
+            echo "Usage: $0 [--non-interactive | -q] [--help]"
             echo ""
-            echo "  --non-interactive  Read all config from env vars / .env file"
-            echo "  --help             Show this help"
+            echo "  --non-interactive, -q  Accept defaults, read config from env vars / .env file"
+            echo "  --help                 Show this help"
             echo ""
             echo "Environment variables for non-interactive mode:"
             echo "  ANTHROPIC_API_KEY      Anthropic API key (required)"
@@ -491,6 +492,7 @@ save_env OPENCLAW_CONFIG_DIR "${CONFIG_DIR}"
 save_env OPENCLAW_WORKSPACE_DIR "${WORKSPACE_DIR}"
 save_env EMBED_MODEL_FILE "${EMBED_MODEL}"
 save_env CHAT_MODEL_FILE "${CHAT_MODEL}"
+save_env INTERNAL_SUBNET "${INTERNAL_SUBNET:-172.27.0.0/24}"
 save_env EGRESS_SUBNET "${EGRESS_SUBNET:-172.28.0.0/24}"
 save_env GATEWAY_IP "${GATEWAY_IP:-172.17.0.1}"
 save_env INGRESS_MODE "${INGRESS_MODE}"
@@ -782,6 +784,16 @@ if ! docker image inspect "${OPENCLAW_IMAGE}" >/dev/null 2>&1; then
         else
             warn "Skipping — set OPENCLAW_IMAGE in .env and re-run, or build locally first."
         fi
+    else
+        # Non-interactive: auto-pull if image not available
+        info "Pulling alpine/openclaw (non-interactive)..."
+        if docker pull alpine/openclaw 2>/dev/null; then
+            OPENCLAW_IMAGE="alpine/openclaw"
+            save_env OPENCLAW_IMAGE "${OPENCLAW_IMAGE}"
+            info "Using image: ${OPENCLAW_IMAGE}"
+        else
+            warn "Pull failed — set OPENCLAW_IMAGE in .env and re-run, or build locally first."
+        fi
     fi
 fi
 
@@ -850,9 +862,11 @@ model_list:
       model: openai/local-embed
       api_base: "http://llama-embed:${EMBED_PORT:-8090}/v1"
       api_key: "not-needed"
+      # llama.cpp rejects null encoding_format — force "float" to avoid 500s
+      encoding_format: "float"
 
-general_settings:
-  master_key: "\${LITELLM_MASTER_KEY}"
+# master_key is set via LITELLM_MASTER_KEY env var (docker-compose.yml).
+# Do NOT set it in general_settings — LiteLLM doesn't expand \${} in YAML.
 LITELLMEOF
 
 info "Written: ${LITELLM_CONFIG}"
@@ -874,16 +888,18 @@ case "${INGRESS_MODE}" in
     tailscale) PROFILES="${PROFILES} --profile tailscale" ;;
 esac
 
-# Ask about monitoring
-ENABLE_MONITOR="${ENABLE_MONITOR:-}"
-if [ "${INTERACTIVE}" = true ] && [ -z "${ENABLE_MONITOR}" ]; then
+# Ask about monitoring (default: enabled in both interactive and non-interactive)
+ENABLE_MONITOR="${ENABLE_MONITOR:-true}"
+if [ "${INTERACTIVE}" = true ]; then
     echo ""
     read -rp "  Enable monitoring (Watchtower auto-updates + Dozzle log viewer)? [Y/n]: " enable_mon
-    if [[ ! "${enable_mon}" =~ ^[Nn] ]]; then
-        PROFILES="${PROFILES} --profile monitor"
+    if [[ "${enable_mon}" =~ ^[Nn] ]]; then
+        ENABLE_MONITOR="false"
     fi
-elif [ "${ENABLE_MONITOR}" = "true" ]; then
+fi
+if [ "${ENABLE_MONITOR}" != "false" ]; then
     PROFILES="${PROFILES} --profile monitor"
+    info "Monitoring enabled (Watchtower + Dozzle)"
 fi
 
 info "Starting stack..."
