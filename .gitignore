@@ -5,6 +5,9 @@
 # Downloaded models (large binary files)
 models/
 
+# Generated LiteLLM config (per-user, created by setup.sh)
+litellm_config.yaml
+
 # Docker volumes
 volumes/
 

@@ -19,7 +19,7 @@ Thanks for your interest in contributing! This project aims to provide a secure,
 ### We enthusiastically welcome:
 
 - **Security hardening improvements** — stricter defaults, better isolation, reduced attack surface
-- **Ingress options** — Tailscale, WireGuard, Caddy, Traefik, or other secure ingress layers
+- **Ingress options** — Caddy, Traefik, Headscale, or other secure ingress layers (Cloudflare Tunnel and Tailscale are already supported)
 - **Platform support** — ARM64, NixOS, Kubernetes, or other deployment targets
 - **Model configuration examples** — documentation and templates for different AI models
 - **Bug fixes** — include clear reproduction steps and rationale
