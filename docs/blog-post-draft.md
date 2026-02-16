@@ -22,7 +22,7 @@ We use a three-tier network design inside Docker:
 
 **Tier 2: Egress-controlled** — The main agent gateway and the tunnel connector live on a second bridge network. An init container installs iptables rules in Docker's `DOCKER-USER` chain that DROP all traffic to RFC1918 private ranges (10.0.0.0/8, 192.168.0.0/16), link-local, multicast, and the Docker gateway IP. Containers can reach the internet (for API calls), but cannot reach your LAN, your NAS, your printer, or anything else on your home network.
 
-**Tier 3: Zero-trust ingress** — Instead of exposing a port, we use a Cloudflare Tunnel. The `cloudflared` container makes an outbound connection to Cloudflare's edge. Inbound requests go through Cloudflare Access, which enforces GitHub OAuth *before any traffic reaches your machine*. No open ports. No port scanning. No DDoS surface.
+**Tier 3: Zero-trust ingress** — Instead of exposing a port, we support two remote access options: Cloudflare Tunnel (GitHub OAuth at Cloudflare's edge, zero exposed ports) or Tailscale mesh VPN (WireGuard-based, ACL-controlled, automatic HTTPS). Both eliminate port exposure; pick the one that fits your trust model.
 
 ```
 Internet → Cloudflare Edge → GitHub OAuth → cloudflared → gateway
@@ -56,7 +56,7 @@ This pattern works for *any* Docker Compose stack where you want internet egress
 
 Egress rules block private IP ranges, but what about known-malicious public domains? A compromised skill or prompt injection could phone home to a C2 server. We solve this with `blocky` — a lightweight DNS firewall that filters all container DNS queries against curated threat intelligence blocklists (StevenBlack/hosts, URLhaus, PhishingArmy, FireBog, CoinBlockerLists).
 
-Upstream resolvers use DNS-over-HTTPS (Cloudflare + Quad9), so no plaintext DNS queries leak to your ISP. An explicit allowlist ensures legitimate API domains (Anthropic, VirusTotal, Telegram, Discord, GitHub, HuggingFace) are never blocked.
+Upstream resolvers use DNS-over-HTTPS (Cloudflare + Quad9), so no plaintext DNS queries leak to your ISP. An explicit allowlist ensures legitimate API domains (Anthropic, VirusTotal, Telegram, GitHub, HuggingFace) are never blocked.
 
 ## Docker Socket Proxy
 
@@ -117,7 +117,7 @@ No security architecture is complete without an honest limitations section:
 
 Self-hosted AI agents are powerful tools that deserve the same security rigor we apply to production infrastructure. The patterns in this post — read-only containers, capability dropping, persistent egress firewalling, DNS threat filtering, Docker socket proxying, skill supply chain vetting, zero-trust ingress, air-gapped local inference — aren't novel individually, but combining them into a single Docker Compose stack makes defense-in-depth accessible to anyone comfortable with `docker compose up`.
 
-The full repo, including Cloudflare Tunnel setup, NordVPN Meshnet alternative, and messaging channel integration guides, is available on GitHub.
+The full repo, including Cloudflare Tunnel and Tailscale mesh VPN ingress options, opt-in telemetry, and messaging channel integration guides, is available on GitHub.
 
 ---
 

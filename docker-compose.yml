@@ -14,11 +14,19 @@
 #  └────────────────────────────┬────────────────────────────────────────┘
 #                               │
 #  ┌────────────────────────────▼────────────────────────────────────────┐
-#  │                       openclaw-gateway                              │
+#  │                       opendeclawed-gateway                         │
 #  │  (REST API, WebSocket, health checks)                              │
-#  │  Networks: openclaw-internal + openclaw-egress                     │
-#  │  Hardening: read-only, drop all caps, user 65534:65534             │
-#  │  Healthcheck: Internal wget to /health                             │
+#  │  Networks: opendeclawed-internal + opendeclawed-egress             │
+#  │  Hardening: drop all caps, no_new_privileges, user 1000:1000       │
+#  │  Healthcheck: curl -sf http://127.0.0.1:18789/health              │
+#  └────────────────────────────┬────────────────────────────────────────┘
+#                               │
+#  ┌────────────────────────────▼────────────────────────────────────────┐
+#  │                       opendeclawed-litellm                         │
+#  │  OpenAI-compatible proxy — single /v1 endpoint for all backends    │
+#  │  Routes chat → llama-chat / MLX / Ollama / cloud                   │
+#  │  Routes embed → llama-embed / MLX / any embedding endpoint         │
+#  │  Internal-only network, all LLM call logs visible in Dozzle        │
 #  └────────────────────────────┬────────────────────────────────────────┘
 #                               │
 #       ┌───────────────────────┴───────────────────────┐
@@ -38,15 +46,16 @@
 #  └─────────────────────────────────────────────────────────────────────┘
 #
 # NETWORK ISOLATION:
-#  - openclaw-internal: bridge, internal=true (no internet access)
-#  - openclaw-egress: bridge, allows outbound via egress firewall rules
+#  - opendeclawed-internal: bridge, internal=true (no internet access)
+#  - opendeclawed-egress: bridge, allows outbound via egress firewall rules
 #  - Services drop ALL Linux capabilities, run as unprivileged user 65534
 #  - Read-only filesystems with minimal tmpfs mounts where needed
 #
 # PROFILES:
 #  - Default: Local-only mode (gateway on 127.0.0.1 via port mapping)
 #  - "tunnel": Enable Cloudflare tunnel ingress (cloudflared service)
-#  - "monitor": Enable Uptime Kuma + Watchtower (health + auto-update)
+#  - "tailscale": Enable Tailscale mesh VPN ingress (WireGuard-based)
+#  - "monitor": Enable Watchtower + Dozzle (auto-update + log viewer)
 #  - "cli": Enable openclaw-cli for onboarding/debugging (interactive)
 #
 # USAGE:
@@ -56,7 +65,7 @@
 #  # With Cloudflare tunnel (requires CLOUDFLARE_TOKEN):
 #  docker-compose --profile tunnel up -d
 #
-#  # With monitoring (Uptime Kuma + Watchtower):
+#  # With monitoring (Watchtower + Dozzle logs):
 #  docker-compose --profile monitor up -d
 #
 #  # Full stack (tunnel + monitoring):
@@ -66,8 +75,6 @@
 #  docker-compose --profile cli up -d openclaw-cli
 #
 # ============================================================================
-
-version: "3.9"
 
 services:
   # ─────────────────────────────────────────────────────────────────────
@@ -94,7 +101,7 @@ services:
   # but DOCKER-USER rules are flushed. The loop catches this within 60s.
   egress-firewall:
     image: "${ALPINE_IMAGE:-alpine:3.19}"
-    container_name: openclaw-egress-firewall
+    container_name: opendeclawed-egress-firewall
     network_mode: host
     cap_add:
       - NET_ADMIN
@@ -106,8 +113,8 @@ services:
       /bin/sh -c '
         apk add --no-cache iptables ip6tables
 
-        GATEWAY_IP="172.17.0.1"
-        EGRESS_SUBNET="${EGRESS_SUBNET:-172.28.0.0/24}"
+        GATEWAY_IP="$${GATEWAY_IP:-172.17.0.1}"
+        EGRESS_SUBNET="$${EGRESS_SUBNET:-172.28.0.0/24}"
 
         install_rules() {
             # Check if our rules are already present (idempotent)
@@ -192,11 +199,15 @@ services:
   #  - IPC: private (no shared memory)
   #  - PID: private (isolated process namespace)
   llama-embed:
-    image: "${LLAMA_IMAGE:-ghcr.io/ggerganov/llama.cpp:latest}"
-    container_name: openclaw-llama-embed
-    command: |
-      server
+    image: "${LLAMA_IMAGE:-ghcr.io/ggml-org/llama.cpp:server}"
+    # The official server image is amd64-only (arm64 CI broken since Apr 2025).
+    # OrbStack uses Rosetta 2 for transparent emulation on Apple Silicon.
+    platform: "${LLAMA_PLATFORM:-linux/amd64}"
+    container_name: opendeclawed-llama-embed
+    profiles: [llama]
+    command: >-
       --model /llama-models/${EMBED_MODEL_FILE:-nomic-embed-text-v1.5.f16.gguf}
+      --host 0.0.0.0
       --threads ${LLAMA_THREADS:-4}
       --ctx-size ${EMBED_CTX:-2048}
       --port ${EMBED_PORT:-8090}
@@ -220,7 +231,8 @@ services:
           cpus: "${LLAMA_EMBED_CPUS_RESERVE:-1}"
           memory: "${LLAMA_EMBED_MEM_RESERVE:-1g}"
     read_only: true
-    no_new_privileges: true
+    security_opt:
+      - no-new-privileges:true
     cap_drop:
       - ALL
     user: "65534:65534"
@@ -244,11 +256,13 @@ services:
   #
   # Security: Same as llama-embed (see above).
   llama-chat:
-    image: "${LLAMA_IMAGE:-ghcr.io/ggerganov/llama.cpp:latest}"
-    container_name: openclaw-llama-chat
-    command: |
-      server
+    image: "${LLAMA_IMAGE:-ghcr.io/ggml-org/llama.cpp:server}"
+    platform: "${LLAMA_PLATFORM:-linux/amd64}"
+    container_name: opendeclawed-llama-chat
+    profiles: [llama]
+    command: >-
       --model /llama-models/${CHAT_MODEL_FILE:-mistral-7b-instruct-v0.2.Q6_K.gguf}
+      --host 0.0.0.0
       --threads ${LLAMA_THREADS:-4}
       --ctx-size ${CHAT_CTX:-4096}
       --port ${CHAT_PORT:-8091}
@@ -271,7 +285,8 @@ services:
           cpus: "${LLAMA_CHAT_CPUS_RESERVE:-2}"
           memory: "${LLAMA_CHAT_MEM_RESERVE:-2g}"
     read_only: true
-    no_new_privileges: true
+    security_opt:
+      - no-new-privileges:true
     cap_drop:
       - ALL
     user: "65534:65534"
@@ -288,52 +303,119 @@ services:
         condition: service_started
 
   # ─────────────────────────────────────────────────────────────────────
+  # LITELLM: OpenAI-compatible LLM proxy/router
+  # ─────────────────────────────────────────────────────────────────────
+  # Presents a single /v1/chat/completions and /v1/embeddings endpoint
+  # to OpenClaw, abstracting the actual backend (llama.cpp containers,
+  # MLX on host, Ollama, vLLM, etc.). Backend routing is defined in
+  # litellm_config.yaml — swap backends without changing openclaw.json.
+  #
+  # Profile: always-on (core infrastructure)
+  #
+  # Security:
+  #  - Internal network only (no internet access)
+  #  - read-only root, all caps dropped, no_new_privileges
+  #  - Master key set to internal-only token (not exposed externally)
+  #  - No database (stateless proxy — logs to stdout for Dozzle)
+  litellm:
+    image: "${LITELLM_IMAGE:-ghcr.io/berriai/litellm:main-stable}"
+    container_name: opendeclawed-litellm
+    command: ["--config", "/app/config.yaml", "--port", "${LITELLM_PORT:-4000}"]
+    networks:
+      openclaw-internal: {}
+    volumes:
+      - ${LITELLM_CONFIG:-./litellm_config.yaml}:/app/config.yaml:ro
+    environment:
+      - LITELLM_MASTER_KEY=${LITELLM_MASTER_KEY:-sk-opendeclawed-internal}
+      - LITELLM_LOG_LEVEL=${LOG_LEVEL:-info}
+    deploy:
+      resources:
+        limits:
+          cpus: "${LITELLM_CPUS:-1}"
+          memory: "${LITELLM_MEM:-256m}"
+        reservations:
+          cpus: "0.25"
+          memory: "128m"
+    read_only: true
+    tmpfs:
+      - /tmp:size=256m,noexec,nosuid,nodev
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    user: "65534:65534"
+    ipc: private
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:${LITELLM_PORT:-4000}/health/liveliness')"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: 5
+    restart: unless-stopped
+    depends_on:
+      egress-firewall:
+        condition: service_started
+
+  # ─────────────────────────────────────────────────────────────────────
   # OPENCLAW-GATEWAY: API server orchestrating LLM backends
   # ─────────────────────────────────────────────────────────────────────
   # Central OpenClaw gateway service. Hosts REST API, WebSocket, and health
-  # checks. Bridges internal (llama backends) and egress (outbound) networks.
+  # checks. Bridges internal (LiteLLM proxy) and egress (outbound) networks.
   #
   # Networking:
-  #  - openclaw-internal: Can reach llama-embed:8090 and llama-chat:8091
+  #  - openclaw-internal: Can reach litellm:4000 (LLM router)
   #  - openclaw-egress: Subject to egress firewall rules (no RFC1918)
   #  - Ports bound to 127.0.0.1 by default (local-only); tunnel mode disables
   #
   # Healthcheck:
-  #  - wget -q -O - http://127.0.0.1:${GATEWAY_PORT:-18789}/health
+  #  - curl -sf http://127.0.0.1:${GATEWAY_PORT:-18789}/health
   #  - Fails if gateway crashes or becomes unresponsive
   #  - Required for cloudflared dependency: service_healthy
   #
   # Security:
   #  - NET_BIND_SERVICE: Only cap needed (bind to ports <1024 if configured)
-  #  - read-only filesystem (except /home/openclaw for config)
+  #  - read-only filesystem; persistent state via bind mounts to ~/.openclaw
+  #  - Container sees ONLY config + workspace directories, no other host paths
   #  - no_new_privileges, drop all capabilities, unprivileged user
-  #  - ipc: shareable (needed for API communication)
+  #  - ipc: private (isolated)
   openclaw-gateway:
-    image: "${OPENCLAW_IMAGE:-ghcr.io/openagentsinc/openclaw:latest}"
-    container_name: openclaw-gateway
-    command: openclaw-gateway --port ${GATEWAY_PORT:-18789} --host 0.0.0.0
-    # Route DNS through blocky for threat filtering + DoH privacy
+    image: "${OPENCLAW_IMAGE:-openclaw:local}"
+    container_name: opendeclawed-gateway
+    # Upstream CMD: node openclaw.mjs gateway --allow-unconfigured
+    # Built image uses dist/index.js. We add --bind lan for container networking.
+    command: ["node", "dist/index.js", "gateway", "--allow-unconfigured", "--bind", "lan", "--port", "${GATEWAY_PORT:-18789}"]
+    init: true
+    # Route DNS through blocky for threat filtering + DoH privacy.
+    # Docker dns: requires an IP, not a hostname. Blocky is pinned to
+    # 172.27.0.53 on the internal network (see blocky service below).
     dns:
-      - blocky
+      - "${BLOCKY_IP:-172.27.0.53}"
     networks:
-      openclaw-internal:
-        ipv4_address: "${GATEWAY_IP_INTERNAL:-172.27.0.2}"
-      openclaw-egress:
-        ipv4_address: "${GATEWAY_IP_EGRESS:-172.28.0.2}"
+      openclaw-internal: {}
+      openclaw-egress: {}
     ports:
       # Local mode: bind to 127.0.0.1 (default)
       # Tunnel mode: no port binding (cloudflared proxies)
       - "127.0.0.1:${GATEWAY_PORT:-18789}:${GATEWAY_PORT:-18789}"
     volumes:
-      - openclaw-home:/home/openclaw:rw
+      # Persistent config — bind mount to host ~/.openclaw (survives daemon restarts).
+      # Matches upstream: /home/node/.openclaw is the default config path.
+      - ${OPENCLAW_CONFIG_DIR:-~/.openclaw}:/home/node/.openclaw:rw
+      - ${OPENCLAW_WORKSPACE_DIR:-~/.openclaw/workspace}:/home/node/.openclaw/workspace:rw
     tmpfs:
       - /tmp:size=2g,noexec,nosuid,nodev
       - /run:size=512m,noexec,nosuid,nodev
     environment:
-      - EMBED_HOST=llama-embed
-      - EMBED_PORT=${EMBED_PORT:-8090}
-      - CHAT_HOST=llama-chat
-      - CHAT_PORT=${CHAT_PORT:-8091}
+      - HOME=/home/node
+      - OPENCLAW_GATEWAY_TOKEN=${OPENCLAW_GATEWAY_TOKEN:-}
+      - LITELLM_HOST=litellm
+      - LITELLM_PORT=${LITELLM_PORT:-4000}
+      - LITELLM_API_KEY=${LITELLM_MASTER_KEY:-sk-opendeclawed-internal}
       - GATEWAY_PORT=${GATEWAY_PORT:-18789}
       - LOG_LEVEL=${LOG_LEVEL:-info}
     deploy:
@@ -344,20 +426,23 @@ services:
         reservations:
           cpus: "${GATEWAY_CPUS_RESERVE:-1}"
           memory: "${GATEWAY_MEM_RESERVE:-2g}"
-    read_only: true
-    no_new_privileges: true
+    # Note: read_only omitted — Node.js app writes temp files to /app/.cache, /tmp, etc.
+    # Hardening still applied via: no-new-privileges, cap_drop ALL, non-root user, tmpfs.
+    security_opt:
+      - no-new-privileges:true
     cap_drop:
       - ALL
     cap_add:
       - NET_BIND_SERVICE
-    user: "65534:65534"
+    # Upstream image sets USER node (uid 1000). Must match for /app file access.
+    user: "1000:1000"
     ipc: private
     # pid: isolated (default) — each container gets its own PID namespace
     healthcheck:
-      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:${GATEWAY_PORT:-18789}/health"]
+      test: ["CMD", "curl", "-sf", "http://127.0.0.1:${GATEWAY_PORT:-18789}/health"]
       interval: 10s
       timeout: 5s
-      retries: 3
+      retries: 5
       start_period: 30s
     logging:
       driver: json-file
@@ -370,10 +455,8 @@ services:
     depends_on:
       egress-firewall:
         condition: service_started
-      llama-embed:
-        condition: service_started
-      llama-chat:
-        condition: service_started
+      litellm:
+        condition: service_healthy
 
   # ─────────────────────────────────────────────────────────────────────
   # CLOUDFLARED: Cloudflare Tunnel ingress (optional, profile: tunnel)
@@ -399,16 +482,32 @@ services:
   #  - CLOUDFLARE_TUNNEL_ROUTE: Hostname to route (e.g., openclaw.example.com)
   cloudflared:
     image: "${CLOUDFLARED_IMAGE:-cloudflare/cloudflared:latest}"
-    container_name: openclaw-cloudflared
+    container_name: opendeclawed-cloudflared
     profiles:
       - tunnel
-    command: |
-      tunnel run
-      --token ${CLOUDFLARE_TOKEN}
+    # NOTE: Token-based tunnels use Cloudflare dashboard ingress rules, which
+    # take precedence over this local config. For token tunnels, configure
+    # routes in Cloudflare Zero Trust dashboard under Networks > Tunnels >
+    # Public Hostname. The local config below serves as documentation and
+    # works for locally-managed (credentials-file) tunnels.
+    entrypoint: |
+      /bin/sh -c '
+        mkdir -p /etc/cloudflared
+        cat > /etc/cloudflared/config.yml << CFGEOF
+      ingress:
+        - hostname: "${CLOUDFLARE_TUNNEL_ROUTE:-openclaw.example.com}"
+          service: "http://openclaw-gateway:${GATEWAY_PORT:-18789}"
+        - service: http_status:404
+      CFGEOF
+        exec cloudflared tunnel --config /etc/cloudflared/config.yml run --token ${CLOUDFLARE_TOKEN}
+      '
     networks:
       openclaw-egress: {}
     read_only: true
-    no_new_privileges: true
+    tmpfs:
+      - /etc/cloudflared:size=1m,noexec,nosuid,nodev
+    security_opt:
+      - no-new-privileges:true
     cap_drop:
       - ALL
     user: "65534:65534"
@@ -428,6 +527,98 @@ services:
         condition: service_healthy
 
   # ─────────────────────────────────────────────────────────────────────
+  # TAILSCALE: Zero-config mesh VPN ingress (optional, profile: tailscale)
+  # ─────────────────────────────────────────────────────────────────────
+  # Exposes openclaw-gateway via your Tailscale tailnet. Devices on the
+  # same tailnet can reach the gateway at https://<hostname>.<tailnet>.ts.net.
+  # Uses Tailscale Serve to proxy HTTPS → gateway HTTP internally.
+  #
+  # Profile: "tailscale"
+  #  - Enable with: docker compose --profile tailscale up -d
+  #  - Requires TS_AUTHKEY env var (one-time or reusable auth key)
+  #
+  # Security:
+  #  - Traffic encrypted end-to-end via WireGuard (Tailscale)
+  #  - Access controlled by Tailscale ACLs (your admin console)
+  #  - No public ports exposed; only tailnet members can connect
+  #  - Persistent state volume avoids re-auth on restart
+  #  - cap_add: NET_ADMIN + NET_RAW (required for WireGuard tunnel)
+  #  - Read-only root, all other caps dropped
+  #
+  # Configuration:
+  #  - TS_AUTHKEY: Auth key from https://login.tailscale.com/admin/settings/keys
+  #  - TS_HOSTNAME: Machine name on your tailnet (default: "openclaw")
+  #  - TS_EXTRA_ARGS: Additional tailscaled flags (optional)
+  tailscale:
+    image: "${TAILSCALE_IMAGE:-tailscale/tailscale:latest}"
+    container_name: opendeclawed-tailscale
+    profiles:
+      - tailscale
+    networks:
+      openclaw-egress: {}
+    volumes:
+      - tailscale-state:/var/lib/tailscale
+    tmpfs:
+      - /tmp:size=64m,noexec,nosuid,nodev
+    environment:
+      - TS_AUTHKEY=${TS_AUTHKEY:-}
+      - TS_HOSTNAME=${TS_HOSTNAME:-openclaw}
+      - TS_STATE_DIR=/var/lib/tailscale
+      - TS_SERVE_CONFIG=/config/serve.json
+      - TS_USERSPACE=true
+      - TS_EXTRA_ARGS=${TS_EXTRA_ARGS:-}
+    # Tailscale Serve config: proxy HTTPS on :443 → gateway HTTP
+    entrypoint: |
+      /bin/sh -c '
+        mkdir -p /config
+        cat > /config/serve.json << SERVECFG
+        {
+          "TCP": {
+            "443": {
+              "HTTPS": true
+            }
+          },
+          "Web": {
+            "$${TS_HOSTNAME:-openclaw}.$${TS_CERT_DOMAIN:-ts.net}:443": {
+              "Handlers": {
+                "/": {
+                  "Proxy": "http://openclaw-gateway:${GATEWAY_PORT:-18789}"
+                }
+              }
+            }
+          }
+        }
+      SERVECFG
+        exec /usr/local/bin/containerboot
+      '
+    deploy:
+      resources:
+        limits:
+          cpus: "${TAILSCALE_CPUS:-0.5}"
+          memory: "${TAILSCALE_MEM:-128m}"
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: 3
+    restart: unless-stopped
+    depends_on:
+      egress-firewall:
+        condition: service_started
+      openclaw-gateway:
+        condition: service_healthy
+    labels:
+      - "com.centurylinklabs.watchtower.enable=false"
+
+  # ─────────────────────────────────────────────────────────────────────
   # DOCKER-SOCKET-PROXY: Least-privilege Docker API access for Watchtower
   # ─────────────────────────────────────────────────────────────────────
   # Instead of giving Watchtower direct access to /var/run/docker.sock
@@ -442,7 +633,7 @@ services:
   #  - cap_drop ALL, no_new_privileges
   docker-socket-proxy:
     image: "${SOCKET_PROXY_IMAGE:-tecnativa/docker-socket-proxy:latest}"
-    container_name: openclaw-socket-proxy
+    container_name: opendeclawed-socket-proxy
     profiles:
       - monitor
     networks:
@@ -481,11 +672,13 @@ services:
           cpus: "0.5"
           memory: "64m"
     read_only: true
-    no_new_privileges: true
+    security_opt:
+      - no-new-privileges:true
     cap_drop:
       - ALL
     tmpfs:
       - /tmp:size=16m,noexec,nosuid,nodev
+      - /run:size=16m,noexec,nosuid,nodev
     logging:
       driver: json-file
       options:
@@ -513,9 +706,11 @@ services:
   #  - Provides defense against DNS exfiltration tunneling via rate limits
   blocky:
     image: "${BLOCKY_IMAGE:-spx01/blocky:latest}"
-    container_name: openclaw-blocky
+    container_name: opendeclawed-blocky
+    command: ["--config", "/app/config/config.yml"]
     networks:
-      openclaw-internal: {}
+      openclaw-internal:
+        ipv4_address: "${BLOCKY_IP:-172.27.0.53}"
       openclaw-egress: {}
     volumes:
       - blocky-config:/app/config:ro
@@ -527,7 +722,8 @@ services:
           cpus: "${BLOCKY_CPUS:-0.5}"
           memory: "${BLOCKY_MEM:-64m}"
     read_only: true
-    no_new_privileges: true
+    security_opt:
+      - no-new-privileges:true
     cap_drop:
       - ALL
     cap_add:
@@ -542,57 +738,6 @@ services:
     depends_on:
       egress-firewall:
         condition: service_started
-    labels:
-      - "com.centurylinklabs.watchtower.enable=true"
-
-  # ─────────────────────────────────────────────────────────────────────
-  # UPTIME-KUMA: Health monitoring dashboard (optional, profile: monitor)
-  # ─────────────────────────────────────────────────────────────────────
-  # Lightweight, self-hosted monitoring for all stack services.
-  # Preconfigured to watch gateway /health endpoint.
-  #
-  # Profile: "monitor"
-  #  - Enable with: docker-compose --profile monitor up -d
-  #
-  # Security:
-  #  - Internal network only (no internet access)
-  #  - cap_drop ALL, no_new_privileges
-  #  - Read-only root with tmpfs + persistent data volume
-  #  - Resource-limited (256m mem default)
-  #  - UI bound to 127.0.0.1 only
-  uptime-kuma:
-    image: "${UPTIME_KUMA_IMAGE:-louislam/uptime-kuma:1}"
-    container_name: openclaw-uptime-kuma
-    profiles:
-      - monitor
-    networks:
-      openclaw-internal: {}
-    ports:
-      - "127.0.0.1:${KUMA_PORT:-3001}:3001"
-    volumes:
-      - uptime-kuma-data:/app/data
-    tmpfs:
-      - /tmp:size=256m,noexec,nosuid,nodev
-    deploy:
-      resources:
-        limits:
-          cpus: "${KUMA_CPUS:-1}"
-          memory: "${KUMA_MEM:-256m}"
-    read_only: true
-    no_new_privileges: true
-    cap_drop:
-      - ALL
-    security_opt:
-      - no-new-privileges:true
-    logging:
-      driver: json-file
-      options:
-        max-size: 10m
-        max-file: 3
-    restart: unless-stopped
-    depends_on:
-      openclaw-gateway:
-        condition: service_healthy
     labels:
       - "com.centurylinklabs.watchtower.enable=true"
 
@@ -614,7 +759,7 @@ services:
   #  - Read-only root filesystem
   watchtower:
     image: "${WATCHTOWER_IMAGE:-containrrr/watchtower:latest}"
-    container_name: openclaw-watchtower
+    container_name: opendeclawed-watchtower
     profiles:
       - monitor
     networks:
@@ -639,11 +784,10 @@ services:
           cpus: "${WATCHTOWER_CPUS:-0.5}"
           memory: "${WATCHTOWER_MEM:-128m}"
     read_only: true
-    no_new_privileges: true
-    cap_drop:
-      - ALL
     security_opt:
       - no-new-privileges:true
+    cap_drop:
+      - ALL
     logging:
       driver: json-file
       options:
@@ -655,6 +799,57 @@ services:
         condition: service_started
     labels:
       - "com.centurylinklabs.watchtower.enable=false"
+
+  # ─────────────────────────────────────────────────────────────────────
+  # DOZZLE: Real-time container log viewer (monitor profile)
+  # ─────────────────────────────────────────────────────────────────────
+  # Lightweight web UI for viewing, filtering, and searching container
+  # logs in real time. Reads Docker's native json-file logs — no log
+  # driver changes or sidecars required. Read-only Docker socket access.
+  #
+  # Profile: "monitor" (same as Watchtower)
+  #
+  # Security:
+  #  - Docker socket: read-only mount (cannot modify containers)
+  #  - DOZZLE_FILTER: only shows openclaw-* containers
+  #  - DOZZLE_NO_ANALYTICS: disables telemetry to Dozzle maintainers
+  #  - Port bound to 127.0.0.1 (local access only)
+  #  - read-only root, all caps dropped, no_new_privileges
+  dozzle:
+    image: "${DOZZLE_IMAGE:-amir20/dozzle:latest}"
+    container_name: opendeclawed-dozzle
+    profiles:
+      - monitor
+    networks:
+      openclaw-internal: {}
+      openclaw-egress: {}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    tmpfs:
+      - /tmp:size=32m,noexec,nosuid,nodev
+    environment:
+      - DOZZLE_ADDR=:${DOZZLE_PORT:-5005}
+      - DOZZLE_LEVEL=info
+      - DOZZLE_FILTER=name=opendeclawed-*
+      - DOZZLE_NO_ANALYTICS=true
+    ports:
+      - "127.0.0.1:${DOZZLE_PORT:-5005}:${DOZZLE_PORT:-5005}"
+    deploy:
+      resources:
+        limits:
+          cpus: "${DOZZLE_CPUS:-0.25}"
+          memory: "${DOZZLE_MEM:-64m}"
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    logging:
+      driver: json-file
+      options:
+        max-size: 5m
+        max-file: 2
+    restart: unless-stopped
 
   # ─────────────────────────────────────────────────────────────────────
   # OPENCLAW-CLI: Interactive CLI for onboarding and debugging
@@ -673,8 +868,10 @@ services:
   #  - Other caps still dropped
   #  - Read-write home volume for credentials/config
   openclaw-cli:
-    image: "${OPENCLAW_IMAGE:-ghcr.io/openagentsinc/openclaw:latest}"
-    container_name: openclaw-cli
+    image: "${OPENCLAW_IMAGE:-openclaw:local}"
+    container_name: opendeclawed-cli
+    entrypoint: ["node", "dist/index.js"]
+    init: true
     profiles:
       - cli
     stdin_open: true
@@ -683,15 +880,19 @@ services:
       openclaw-internal: {}
       openclaw-egress: {}
     volumes:
-      - openclaw-home:/home/openclaw:rw
+      - ${OPENCLAW_CONFIG_DIR:-~/.openclaw}:/home/node/.openclaw:rw
+      - ${OPENCLAW_WORKSPACE_DIR:-~/.openclaw/workspace}:/home/node/.openclaw/workspace:rw
     tmpfs:
       - /tmp:size=1g,noexec,nosuid
       - /run:size=256m,noexec,nosuid
     environment:
-      - EMBED_HOST=llama-embed
-      - EMBED_PORT=${EMBED_PORT:-8090}
-      - CHAT_HOST=llama-chat
-      - CHAT_PORT=${CHAT_PORT:-8091}
+      - HOME=/home/node
+      - TERM=xterm-256color
+      - BROWSER=echo
+      - OPENCLAW_GATEWAY_TOKEN=${OPENCLAW_GATEWAY_TOKEN:-}
+      - LITELLM_HOST=litellm
+      - LITELLM_PORT=${LITELLM_PORT:-4000}
+      - LITELLM_API_KEY=${LITELLM_MASTER_KEY:-sk-opendeclawed-internal}
       - GATEWAY_HOST=openclaw-gateway
       - GATEWAY_PORT=${GATEWAY_PORT:-18789}
       - LOG_LEVEL=${LOG_LEVEL:-debug}
@@ -714,8 +915,8 @@ networks:
   # ─────────────────────────────────────────────────────────────────────
   # OPENCLAW-INTERNAL: LLM service mesh (no internet access)
   # ─────────────────────────────────────────────────────────────────────
-  # Bridge network for llama-embed, llama-chat, and openclaw-gateway to
-  # communicate. Marked internal: true so containers cannot reach the host
+  # Bridge network for litellm, llama-embed, llama-chat, and openclaw-gateway
+  # to communicate. Marked internal: true so containers cannot reach the host
   # or internet directly. Subject to egress firewall rules (allows
   # inter-container within 172.27.0.0/16).
   openclaw-internal:
@@ -723,7 +924,7 @@ networks:
     internal: true
     ipam:
       config:
-        - subnet: "${INTERNAL_SUBNET:-172.27.0.0/16}"
+        - subnet: "${INTERNAL_SUBNET:-172.27.0.0/24}"
 
   # ─────────────────────────────────────────────────────────────────────
   # OPENCLAW-EGRESS: Egress-controlled network (outbound rules apply)
@@ -740,28 +941,36 @@ networks:
 
 volumes:
   # ─────────────────────────────────────────────────────────────────────
-  # UPTIME-KUMA-DATA: Persistent monitoring state
-  # ─────────────────────────────────────────────────────────────────────
-  # ─────────────────────────────────────────────────────────────────────
   # BLOCKY-CONFIG: DNS firewall configuration
   # ─────────────────────────────────────────────────────────────────────
   blocky-config:
     driver: local
 
-  uptime-kuma-data:
+  # ─────────────────────────────────────────────────────────────────────
+  # TAILSCALE-STATE: Persistent Tailscale auth state
+  # ─────────────────────────────────────────────────────────────────────
+  # Stores WireGuard keys and auth state. Persisting this avoids
+  # re-authentication on container restart.
+  tailscale-state:
     driver: local
 
+
   # ─────────────────────────────────────────────────────────────────────
-  # OPENCLAW-HOME: Gateway configuration and credentials
+  # OPENCLAW HOME: Bind-mounted from host (no volume definition needed)
   # ─────────────────────────────────────────────────────────────────────
-  # Persistent home directory for openclaw-gateway. Stores API keys,
-  # configs, and agent state. Permissions: 0700 (owner only).
-  openclaw-home:
-    driver: local
-    driver_opts:
-      type: tmpfs
-      device: tmpfs
-      o: "size=512m,mode=0700"
+  # The gateway and CLI containers bind-mount two host directories:
+  #   ${OPENCLAW_CONFIG_DIR:-~/.openclaw}     → /home/openclaw/config
+  #   ${OPENCLAW_WORKSPACE_DIR:-~/.openclaw/workspace} → /home/openclaw/workspace
+  #
+  # These are the ONLY host paths accessible to the gateway container.
+  # Docker enforces this — containers cannot mount paths not declared
+  # in their compose volumes section (and we block Docker socket access
+  # via the socket proxy, preventing runtime volume creation).
+  #
+  # Host-side permissions (set by setup.sh):
+  #   ~/.openclaw/            → 700 (owner only)
+  #   ~/.openclaw/openclaw.json → 600
+  #   ~/.openclaw/workspace/  → 700
 
   # ─────────────────────────────────────────────────────────────────────
   # LLAMA-MODELS: Shared model cache (read-only for services)

@@ -1,57 +1,98 @@
 {
-  "agent": {
-    "model": "anthropic/claude-sonnet-4-5-20250929"
+  "meta": {
+    "lastTouchedVersion": "2026.2.14",
+    "lastTouchedAt": "2026-01-01T00:00:00.000Z"
   },
-
-  "heartbeat": {
-    "enabled": true,
-    "intervalMinutes": 60,
-    "model": "anthropic/claude-haiku-4-5-20251001"
+  "wizard": {
+    "lastRunAt": "2026-01-01T00:00:00.000Z",
+    "lastRunVersion": "2026.2.14",
+    "lastRunCommand": "onboard",
+    "lastRunMode": "local"
   },
-
+  "env": {
+    "ANTHROPIC_API_KEY": "sk-ant-REPLACE_ME"
+  },
   "models": {
-    "routing": {
-      "default":   "anthropic/claude-sonnet-4-5-20250929",
-      "heartbeat": "anthropic/claude-haiku-4-5-20251001",
-      "quick":     "anthropic/claude-haiku-4-5-20251001",
-      "reasoning": "anthropic/claude-opus-4-6",
-      "embedding": "local/nomic-embed"
+    "providers": {
+      "litellm": {
+        "baseUrl": "http://litellm:4000/v1",
+        "apiKey": "sk-opendeclawed-internal",
+        "api": "openai-completions",
+        "models": [
+          {
+            "id": "local/local-chat",
+            "name": "Local Chat (via LiteLLM)",
+            "contextWindow": 4096,
+            "maxTokens": 2048
+          },
+          {
+            "id": "local/local-embed",
+            "name": "Local Embed (via LiteLLM)",
+            "contextWindow": 8192,
+            "maxTokens": 512
+          }
+        ]
+      }
     }
   },
-
-  "providers": {
-    "anthropic": {
-      "type": "api-key",
-      "apiKey": "sk-ant-REPLACE_ME"
-    },
-    "local-llm": {
-      "type": "openai-compatible",
-      "baseUrl": "http://llama-chat:8091/v1",
-      "apiKey": "not-needed",
-      "models": ["local/llama-3.2-3b"]
-    },
-    "local-embed": {
-      "type": "openai-compatible",
-      "baseUrl": "http://llama-embed:8090/v1",
-      "apiKey": "not-needed",
-      "models": ["local/nomic-embed"]
+  "agents": {
+    "defaults": {
+      "model": {
+        "primary": "anthropic/claude-sonnet-4-5-20250929",
+        "fallbacks": [
+          "anthropic/claude-haiku-4-5-20251001"
+        ]
+      },
+      "models": {
+        "anthropic/claude-sonnet-4-5-20250929": { "alias": "Sonnet" },
+        "anthropic/claude-haiku-4-5-20251001":  { "alias": "Haiku" },
+        "anthropic/claude-opus-4-6":            { "alias": "Opus" }
+      },
+      "workspace": "/home/node/.openclaw/workspace",
+      "heartbeat": {
+        "every": "60m",
+        "target": "last"
+      },
+      "sandbox": {
+        "mode": "non-main",
+        "scope": "agent"
+      }
     }
   },
-
-  "security": {
-    "dmPolicy": "pairing",
-    "allowlist": [],
-    "elevated": false,
-    "sandbox": "strict"
+  "commands": {
+    "native": "auto",
+    "nativeSkills": "auto"
   },
-
   "gateway": {
-    "bind": "0.0.0.0",
     "port": 18789,
-    "tailscale": false
+    "mode": "local",
+    "bind": "lan",
+    "controlUi": {
+      "enabled": true,
+      "allowInsecureAuth": true
+    },
+    "auth": {
+      "mode": "token",
+      "token": "REPLACE_ME_WITH_RANDOM_HEX"
+    },
+    "trustedProxies": ["172.28.0.0/24", "172.17.0.0/16", "192.168.65.0/24"],
+    "tailscale": {
+      "mode": "off",
+      "resetOnExit": false
+    }
   },
-
-  "telemetry": {
-    "enabled": false
+  "channels": {
+    "telegram": {
+      "enabled": false,
+      "dmPolicy": "pairing",
+      "botToken": "",
+      "groupPolicy": "allowlist",
+      "streamMode": "partial"
+    }
+  },
+  "plugins": {
+    "entries": {
+      "telegram": { "enabled": false }
+    }
   }
 }

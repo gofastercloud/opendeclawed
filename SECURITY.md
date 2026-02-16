@@ -26,6 +26,7 @@ This document details the security hardening mechanisms in OpenDeclawed. The dep
 | Threat | Mitigation | Severity |
 |--------|-----------|----------|
 | Container breakout to host | Unprivileged user, dropped capabilities, no write access, isolated PID/IPC namespaces | Critical |
+| Container reads arbitrary host files | Bind mounts restricted to ~/.openclaw (config + workspace only); no Docker socket access prevents runtime volume creation | Critical |
 | Container reach private networks | iptables DOCKER-USER persistent sidecar (60s re-check loop, survives Docker restarts) | Critical |
 | Container reach host via gateway IP | Explicit DROP rule for 172.17.0.1 | Critical |
 | Docker socket as root escalation | docker-socket-proxy (tecnativa) with least-privilege API filtering for Watchtower | Critical |
@@ -39,6 +40,10 @@ This document details the security hardening mechanisms in OpenDeclawed. The dep
 | Gateway API compromise | Limited egress, DNS-filtered, internal llama network only | Medium |
 | Secrets committed to git | TruffleHog pre-commit hook (800+ detectors, entropy analysis) + scan-secrets.sh | High |
 | Cloudflare tunnel token leak | Token in .env (mode 600), not in image | Medium |
+| Tailscale auth key leak | Key in .env (mode 600), reusable keys scoped by tag ACLs | Medium |
+| Telemetry data exfiltration | Telemetry disabled by default (opt-in); no credentials or PII transmitted when enabled | Low |
+| LiteLLM proxy compromise | Internal network only, stateless (no DB), read-only root, all caps dropped, internal-only master key | Low |
+| Log viewer exposes sensitive data | Dozzle bound to 127.0.0.1, monitor profile only, DOZZLE_FILTER=opendeclawed-*, read-only socket, no analytics | Low |
 | Resource exhaustion (CPU/memory) | Deploy resource limits and reservations on every container | Medium |
 
 ### Not Mitigated (Accepted Risks)
@@ -48,7 +53,7 @@ This document details the security hardening mechanisms in OpenDeclawed. The dep
 - **Egress-firewall privileges**: Requires `network_mode: host` + `NET_ADMIN` — mitigated by Alpine digest pinning + Trivy scanning
 - **docker inspect secret leakage**: Users in the docker group can read env vars via `docker inspect` — mitigated by socket proxy for automated tools
 - **API authentication**: Basic setup has no auth; add Cloudflare Access or reverse proxy
-- **Encryption in transit**: Local-only mode uses unencrypted HTTP; tunnel mode uses HTTPS via Cloudflare
+- **Encryption in transit**: Local-only mode uses unencrypted HTTP; tunnel mode uses HTTPS via Cloudflare; Tailscale mode uses WireGuard + auto-TLS
 - **Side-channel attacks**: Timing/power analysis not addressed
 
 ## Kernel-Level Egress Control
@@ -395,9 +400,26 @@ Cloudflare tokens should be rotated every 90 days:
 CLOUDFLARE_TOKEN=eyJhIjoiWWWWWW... docker-compose up -d
 ```
 
-**5. Pre-commit secrets detection (TruffleHog)**
+**5. Write-as-you-go credential persistence**
 
-TruffleHog scans every commit for leaked credentials before they reach git history. It covers 800+ detector patterns (including Anthropic API keys, Cloudflare tokens, Discord/Telegram bot tokens natively) plus high-entropy string detection.
+The setup script writes each credential to `.env` immediately after collection via the `save_env` helper. If the script crashes mid-way (e.g., during model download), all previously entered credentials survive. On re-run, they're loaded from `.env` and `openclaw.json` automatically — no re-entry needed.
+
+**6. Token format validation**
+
+Before accepting a credential, the setup script validates it against known patterns:
+
+| Credential | Expected pattern |
+|---|---|
+| Anthropic API key | Starts with `sk-ant-` |
+| VirusTotal API key | 64-character hex string |
+| Cloudflare tunnel token | Starts with `eyJ` (base64 JWT) |
+| Telegram bot token | `123456789:ABC...` (numeric ID + colon + alphanumeric) |
+
+If the format doesn't match, the user is warned and can either re-enter or explicitly accept (for edge cases like OAuth tokens in place of API keys).
+
+**7. Pre-commit secrets detection (TruffleHog)**
+
+TruffleHog scans every commit for leaked credentials before they reach git history. It covers 800+ detector patterns (including Anthropic API keys, Cloudflare tokens, Telegram bot tokens natively) plus high-entropy string detection.
 
 ```bash
 # Install (setup.sh does this automatically)
