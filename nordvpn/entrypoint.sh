@@ -1,0 +1,82 @@
+#!/bin/sh
+set -eu
+
+# ── Validate environment ────────────────────────────────────────────
+if [ -z "${NORDVPN_TOKEN:-}" ]; then
+    echo "ERROR: NORDVPN_TOKEN is required" >&2
+    exit 1
+fi
+
+CADDY_IP="${CADDY_IP:-}"
+CADDY_PORT="${CADDY_PORT:-443}"
+
+# ── Start NordVPN daemon ────────────────────────────────────────────
+# The daemon manages the WireGuard tunnel for meshnet.
+nordvpnd &
+DAEMON_PID=$!
+
+# Wait for daemon to be ready
+echo "Waiting for NordVPN daemon..."
+for i in $(seq 1 30); do
+    if nordvpn status >/dev/null 2>&1; then
+        echo "NordVPN daemon ready."
+        break
+    fi
+    if [ "$i" = "30" ]; then
+        echo "ERROR: NordVPN daemon failed to start" >&2
+        exit 1
+    fi
+    sleep 1
+done
+
+# ── Login and enable meshnet ────────────────────────────────────────
+# Token login (non-interactive, no browser)
+nordvpn login --token "${NORDVPN_TOKEN}"
+
+# Enable meshnet (peer-to-peer, no full VPN tunnel)
+nordvpn set meshnet on
+nordvpn set mesh-receive on
+
+echo "Meshnet enabled. Waiting for peer connections..."
+
+# ── Detect meshnet IP ───────────────────────────────────────────────
+MESH_IP=""
+for i in $(seq 1 30); do
+    MESH_IP=$(nordvpn meshnet peer list 2>/dev/null \
+        | grep -oE 'Address: [0-9.]+' | head -1 | awk '{print $2}') || true
+    if [ -n "${MESH_IP}" ]; then
+        echo "Meshnet IP: ${MESH_IP}"
+        break
+    fi
+    sleep 2
+done
+
+if [ -z "${MESH_IP}" ]; then
+    echo "WARNING: Could not detect meshnet IP. DNAT rules not installed." >&2
+    echo "Check: nordvpn meshnet peer list" >&2
+fi
+
+# ── iptables DNAT: forward meshnet:443 → caddy ─────────────────────
+# Only meshnet peers can reach this IP. Caddy handles TLS + reverse proxy.
+if [ -n "${MESH_IP}" ] && [ -n "${CADDY_IP}" ]; then
+    iptables -t nat -A PREROUTING \
+        -d "${MESH_IP}" -p tcp --dport "${CADDY_PORT}" \
+        -j DNAT --to-destination "${CADDY_IP}:${CADDY_PORT}"
+    iptables -t nat -A POSTROUTING -j MASQUERADE
+    echo "DNAT installed: ${MESH_IP}:${CADDY_PORT} -> ${CADDY_IP}:${CADDY_PORT}"
+else
+    echo "WARNING: DNAT not installed (MESH_IP=${MESH_IP}, CADDY_IP=${CADDY_IP})" >&2
+fi
+
+# ── Keep alive ──────────────────────────────────────────────────────
+# Trap signals for clean shutdown
+cleanup() {
+    echo "Shutting down NordVPN meshnet..."
+    nordvpn logout 2>/dev/null || true
+    kill "${DAEMON_PID}" 2>/dev/null || true
+    exit 0
+}
+trap cleanup TERM INT
+
+echo "NordVPN meshnet running. PID: ${DAEMON_PID}"
+wait "${DAEMON_PID}"
