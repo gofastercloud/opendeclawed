@@ -7,12 +7,12 @@
 
 	# Uptime Kuma dashboard (strip /kuma prefix — Kuma doesn't support sub-paths)
 	handle_path /kuma/* {
-		reverse_proxy opendeclawed-uptime-kuma:3001
+		reverse_proxy uptime-kuma:3001
 	}
 
 	# Dozzle log viewer (preserve path — Dozzle has DOZZLE_BASE=/logs)
 	handle /logs/* {
-		reverse_proxy opendeclawed-dozzle:{$DOZZLE_PORT:5005}
+		reverse_proxy dozzle:{$DOZZLE_PORT:5005}
 	}
 
 	# Gateway API (default route)

@@ -12,6 +12,14 @@ CADDY_PORT="${CADDY_PORT:-443}"
 
 # ── Start NordVPN daemon ────────────────────────────────────────────
 # The daemon manages the WireGuard tunnel for meshnet.
+cleanup() {
+    echo "Shutting down NordVPN meshnet..."
+    nordvpn logout 2>/dev/null || true
+    kill "${DAEMON_PID:-}" 2>/dev/null || true
+    exit 0
+}
+trap cleanup TERM INT
+
 nordvpnd &
 DAEMON_PID=$!
 
@@ -69,14 +77,5 @@ else
 fi
 
 # ── Keep alive ──────────────────────────────────────────────────────
-# Trap signals for clean shutdown
-cleanup() {
-    echo "Shutting down NordVPN meshnet..."
-    nordvpn logout 2>/dev/null || true
-    kill "${DAEMON_PID}" 2>/dev/null || true
-    exit 0
-}
-trap cleanup TERM INT
-
 echo "NordVPN meshnet running. PID: ${DAEMON_PID}"
 wait "${DAEMON_PID}"

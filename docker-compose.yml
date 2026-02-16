@@ -486,6 +486,11 @@ services:
     container_name: opendeclawed-cloudflared
     profiles:
       - tunnel
+    # NOTE: Token-based tunnels use Cloudflare dashboard ingress rules, which
+    # take precedence over this local config. For token tunnels, configure
+    # /kuma/* and /logs/* routes in Cloudflare Zero Trust dashboard under
+    # Networks > Tunnels > Public Hostname. The local config below serves as
+    # documentation and works for locally-managed (credentials-file) tunnels.
     entrypoint: |
       /bin/sh -c '
         mkdir -p /etc/cloudflared
@@ -493,10 +498,10 @@ services:
       ingress:
         - hostname: "${CLOUDFLARE_TUNNEL_ROUTE:-openclaw.example.com}"
           path: "/kuma/*"
-          service: "http://opendeclawed-uptime-kuma:3001"
+          service: "http://uptime-kuma:3001"
         - hostname: "${CLOUDFLARE_TUNNEL_ROUTE:-openclaw.example.com}"
           path: "/logs/*"
-          service: "http://opendeclawed-dozzle:${DOZZLE_PORT:-5005}"
+          service: "http://dozzle:${DOZZLE_PORT:-5005}"
         - hostname: "${CLOUDFLARE_TUNNEL_ROUTE:-openclaw.example.com}"
           service: "http://openclaw-gateway:${GATEWAY_PORT:-18789}"
         - service: http_status:404
@@ -587,10 +592,10 @@ services:
                   "Proxy": "http://openclaw-gateway:${GATEWAY_PORT:-18789}"
                 },
                 "/kuma/": {
-                  "Proxy": "http://opendeclawed-uptime-kuma:3001"
+                  "Proxy": "http://uptime-kuma:3001"
                 },
                 "/logs/": {
-                  "Proxy": "http://opendeclawed-dozzle:${DOZZLE_PORT:-5005}"
+                  "Proxy": "http://dozzle:${DOZZLE_PORT:-5005}"
                 }
               }
             }
@@ -661,14 +666,15 @@ services:
       - /run:size=32m,noexec,nosuid,nodev
     environment:
       - NORDVPN_TOKEN=${NORDVPN_TOKEN:-}
-      - CADDY_IP=${CADDY_IP:-}
+      - CADDY_IP=${CADDY_IP:-172.29.0.10}
       - CADDY_PORT=443
     deploy:
       resources:
         limits:
           cpus: "${NORDVPN_CPUS:-0.5}"
           memory: "${NORDVPN_MEM:-256m}"
-    read_only: true
+    # Note: read_only omitted — nordvpnd writes to /var/run, /etc/nordvpn, /dev/net.
+    # Acceptable because this container is isolated to openclaw-meshnet (internal).
     security_opt:
       - no-new-privileges:true
     cap_drop:
@@ -705,7 +711,8 @@ services:
     profiles:
       - meshnet
     networks:
-      openclaw-meshnet: {}
+      openclaw-meshnet:
+        ipv4_address: "172.29.0.10"
       openclaw-egress: {}
     volumes:
       - ./nordvpn/Caddyfile:/etc/caddy/Caddyfile:ro
