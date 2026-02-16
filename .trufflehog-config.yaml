@@ -17,9 +17,7 @@ exclude_paths:
 #   - Anthropic API keys (sk-ant-api03-...)
 #   - GitHub tokens
 #   - Cloudflare API tokens
-#   - Discord bot tokens
 #   - Telegram bot tokens
-#   - NordVPN tokens
 #   - Generic high-entropy strings
 #   - Private keys (RSA, ECDSA, Ed25519)
 #   - AWS, GCP, Azure credentials

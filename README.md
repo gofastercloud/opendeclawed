@@ -168,7 +168,7 @@ See `.env.example` for comprehensive documentation. Key variables:
 - `GATEWAY_PORT`: REST API port (default: 18789)
 - `EMBED_PORT`: Embedding server port (default: 8090, internal only)
 - `CHAT_PORT`: Chat server port (default: 8091, internal only)
-- `INTERNAL_SUBNET`: llama backend network (default: 172.27.0.0/16)
+- `INTERNAL_SUBNET`: llama backend network (default: 172.27.0.0/24)
 - `EGRESS_SUBNET`: egress-controlled network (default: 172.28.0.0/24)
 
 **Cloudflare Tunnel (optional)**
@@ -245,8 +245,7 @@ All services (except egress-firewall):
 - Capabilities: drop ALL (no special kernel access)
 - Read-only filesystem with minimal tmpfs mounts
 - no_new_privileges: true (cannot escalate privileges)
-- ipc: private or shareable (isolated inter-process communication)
-- pid: service:egress-firewall (shared process namespace, safer than host)
+- ipc: private (isolated inter-process communication)
 
 ### Healthchecks
 
@@ -396,7 +395,7 @@ Contributions welcome! Please:
 
 ## License
 
-See LICENSE file (typically MIT or Apache 2.0 for open-source AI projects).
+MIT License. See [LICENSE](LICENSE) for details.
 
 ## Security Reporting
 

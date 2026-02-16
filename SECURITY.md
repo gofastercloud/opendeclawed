@@ -166,9 +166,15 @@ Then selectively add only required capabilities:
 | egress-firewall | NET_ADMIN, NET_RAW | Modify iptables rules |
 | llama-embed | None | No special permissions needed |
 | llama-chat | None | No special permissions needed |
+| litellm | None | No special permissions needed |
 | openclaw-gateway | NET_BIND_SERVICE | Bind to ports <1024 (if configured) |
 | cloudflared | None | No special permissions needed |
-| openclaw-cli | NET_RAW | For ping/traceroute diagnostics |
+| tailscale | NET_ADMIN, NET_RAW | WireGuard tunnel setup |
+| docker-socket-proxy | None | No special permissions needed |
+| blocky | NET_BIND_SERVICE | Bind to DNS port 53 |
+| watchtower | None | No special permissions needed |
+| dozzle | None | No special permissions needed |
+| openclaw-cli | NET_RAW | Ping/traceroute diagnostics |
 
 **Linux capabilities reference**:
 - **CAP_NET_ADMIN**: Modify network rules (iptables, routing)
@@ -214,24 +220,15 @@ Prevents processes from gaining additional privileges via:
 
 Once set, cannot be undone in child processes.
 
-### Isolated Process Namespaces
+### Isolated IPC Namespaces
 
 ```yaml
-ipc: private       # llama services: no shared memory
-ipc: shareable     # gateway: can expose for inter-process communication
-pid: service:egress-firewall  # Share process namespace with init container
+ipc: private       # All services: no shared memory between containers
 ```
 
 **IPC modes**:
 - **private**: Cannot use System V semaphores, message queues, shared memory with other containers
-- **shareable**: Can be joined by other containers
 - **host**: Can access host IPC (dangerous, not used)
-
-**PID modes**:
-- **service:egress-firewall**: Join egress-firewall's PID namespace
-  - All containers see egress-firewall as PID 1
-  - Enables graceful shutdown signaling
-  - Prevents zombie process accumulation
 
 ## Network Isolation
 
@@ -267,7 +264,7 @@ docker0 (host bridge)
 
 ### IP Addressing
 
-- **internal network**: 172.27.0.0/16 (configurable: INTERNAL_SUBNET)
+- **internal network**: 172.27.0.0/24 (configurable: INTERNAL_SUBNET)
 - **egress network**: 172.28.0.0/24 (configurable: EGRESS_SUBNET)
 - **docker0 (host bridge)**: 172.17.0.0/16 (Docker default)
 
