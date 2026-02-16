@@ -108,6 +108,12 @@ services:
       - NET_RAW
     cap_drop:
       - ALL
+    # NOTE: no-new-privileges, read_only, and non-root user are intentionally
+    # omitted — iptables requires root and apk install writes to the filesystem.
+    # Mitigated by: Alpine image pinned by tag, Trivy scanning, minimal surface.
+    security_opt:
+      - no-new-privileges:true
+    ipc: private
     restart: unless-stopped
     entrypoint: |
       /bin/sh -c '
@@ -178,6 +184,7 @@ services:
         limits:
           cpus: "0.1"
           memory: "32m"
+          pids: 32
     logging:
       driver: json-file
       options:
@@ -227,6 +234,7 @@ services:
         limits:
           cpus: "${LLAMA_EMBED_CPUS:-2}"
           memory: "${LLAMA_EMBED_MEM:-2g}"
+          pids: 256
         reservations:
           cpus: "${LLAMA_EMBED_CPUS_RESERVE:-1}"
           memory: "${LLAMA_EMBED_MEM_RESERVE:-1g}"
@@ -237,7 +245,6 @@ services:
       - ALL
     user: "65534:65534"
     ipc: private
-    # pid: isolated (default) — each container gets its own PID namespace
     logging:
       driver: json-file
       options:
@@ -281,6 +288,7 @@ services:
         limits:
           cpus: "${LLAMA_CHAT_CPUS:-3}"
           memory: "${LLAMA_CHAT_MEM:-4g}"
+          pids: 256
         reservations:
           cpus: "${LLAMA_CHAT_CPUS_RESERVE:-2}"
           memory: "${LLAMA_CHAT_MEM_RESERVE:-2g}"
@@ -291,7 +299,6 @@ services:
       - ALL
     user: "65534:65534"
     ipc: private
-    # pid: isolated (default) — each container gets its own PID namespace
     logging:
       driver: json-file
       options:
@@ -333,6 +340,7 @@ services:
         limits:
           cpus: "${LITELLM_CPUS:-1}"
           memory: "${LITELLM_MEM:-256m}"
+          pids: 256
         reservations:
           cpus: "0.25"
           memory: "128m"
@@ -423,6 +431,7 @@ services:
         limits:
           cpus: "${GATEWAY_CPUS:-2}"
           memory: "${GATEWAY_MEM:-4g}"
+          pids: 256
         reservations:
           cpus: "${GATEWAY_CPUS_RESERVE:-1}"
           memory: "${GATEWAY_MEM_RESERVE:-2g}"
@@ -437,7 +446,6 @@ services:
     # Upstream image sets USER node (uid 1000). Must match for /app file access.
     user: "1000:1000"
     ipc: private
-    # pid: isolated (default) — each container gets its own PID namespace
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://127.0.0.1:${GATEWAY_PORT:-18789}/health"]
       interval: 10s
@@ -481,7 +489,7 @@ services:
   #  - CLOUDFLARE_TUNNEL_NAME: Tunnel ID or name
   #  - CLOUDFLARE_TUNNEL_ROUTE: Hostname to route (e.g., openclaw.example.com)
   cloudflared:
-    image: "${CLOUDFLARED_IMAGE:-cloudflare/cloudflared:latest}"
+    image: "${CLOUDFLARED_IMAGE:-cloudflare/cloudflared:2024.1.1}"
     container_name: opendeclawed-cloudflared
     profiles:
       - tunnel
@@ -499,10 +507,13 @@ services:
           service: "http://openclaw-gateway:${GATEWAY_PORT:-18789}"
         - service: http_status:404
       CFGEOF
-        exec cloudflared tunnel --config /etc/cloudflared/config.yml run --token ${CLOUDFLARE_TOKEN}
+        exec cloudflared tunnel --config /etc/cloudflared/config.yml run --token "${CLOUDFLARE_TOKEN}"
       '
     networks:
+      openclaw-internal: {}
       openclaw-egress: {}
+    dns:
+      - "${BLOCKY_IP:-172.27.0.53}"
     read_only: true
     tmpfs:
       - /etc/cloudflared:size=1m,noexec,nosuid,nodev
@@ -550,12 +561,15 @@ services:
   #  - TS_HOSTNAME: Machine name on your tailnet (default: "openclaw")
   #  - TS_EXTRA_ARGS: Additional tailscaled flags (optional)
   tailscale:
-    image: "${TAILSCALE_IMAGE:-tailscale/tailscale:latest}"
+    image: "${TAILSCALE_IMAGE:-tailscale/tailscale:v1.76.6}"
     container_name: opendeclawed-tailscale
     profiles:
       - tailscale
     networks:
+      openclaw-internal: {}
       openclaw-egress: {}
+    dns:
+      - "${BLOCKY_IP:-172.27.0.53}"
     volumes:
       - tailscale-state:/var/lib/tailscale
     tmpfs:
@@ -596,6 +610,7 @@ services:
         limits:
           cpus: "${TAILSCALE_CPUS:-0.5}"
           memory: "${TAILSCALE_MEM:-128m}"
+          pids: 128
     read_only: true
     security_opt:
       - no-new-privileges:true
@@ -604,6 +619,9 @@ services:
     cap_add:
       - NET_ADMIN
       - NET_RAW
+    # NOTE: user directive omitted — Tailscale needs root for WireGuard tunnel setup.
+    # Mitigated by: read_only, no-new-privileges, cap_drop ALL + selective cap_add.
+    ipc: private
     logging:
       driver: json-file
       options:
@@ -632,7 +650,7 @@ services:
   #  - Internal network only (no internet access)
   #  - cap_drop ALL, no_new_privileges
   docker-socket-proxy:
-    image: "${SOCKET_PROXY_IMAGE:-tecnativa/docker-socket-proxy:latest}"
+    image: "${SOCKET_PROXY_IMAGE:-tecnativa/docker-socket-proxy:0.2.0}"
     container_name: opendeclawed-socket-proxy
     profiles:
       - monitor
@@ -671,11 +689,14 @@ services:
         limits:
           cpus: "0.5"
           memory: "64m"
+          pids: 64
     read_only: true
     security_opt:
       - no-new-privileges:true
     cap_drop:
       - ALL
+    # NOTE: user directive omitted — socket proxy needs root to bind port 2375.
+    ipc: private
     tmpfs:
       - /tmp:size=16m,noexec,nosuid,nodev
       - /run:size=16m,noexec,nosuid,nodev
@@ -705,7 +726,7 @@ services:
   #  - cap_drop ALL, no_new_privileges, read-only root
   #  - Provides defense against DNS exfiltration tunneling via rate limits
   blocky:
-    image: "${BLOCKY_IMAGE:-spx01/blocky:latest}"
+    image: "${BLOCKY_IMAGE:-spx01/blocky:v0.24}"
     container_name: opendeclawed-blocky
     command: ["--config", "/app/config/config.yml"]
     networks:
@@ -721,6 +742,7 @@ services:
         limits:
           cpus: "${BLOCKY_CPUS:-0.5}"
           memory: "${BLOCKY_MEM:-64m}"
+          pids: 64
     read_only: true
     security_opt:
       - no-new-privileges:true
@@ -729,6 +751,7 @@ services:
     cap_add:
       - NET_BIND_SERVICE
     user: "65534:65534"
+    ipc: private
     logging:
       driver: json-file
       options:
@@ -758,7 +781,7 @@ services:
   #  - Poll interval configurable (default 24h)
   #  - Read-only root filesystem
   watchtower:
-    image: "${WATCHTOWER_IMAGE:-containrrr/watchtower:latest}"
+    image: "${WATCHTOWER_IMAGE:-containrrr/watchtower:1.7.1}"
     container_name: opendeclawed-watchtower
     profiles:
       - monitor
@@ -783,11 +806,15 @@ services:
         limits:
           cpus: "${WATCHTOWER_CPUS:-0.5}"
           memory: "${WATCHTOWER_MEM:-128m}"
+          pids: 64
     read_only: true
     security_opt:
       - no-new-privileges:true
     cap_drop:
       - ALL
+    # NOTE: user directive omitted — Watchtower image runs as root by default
+    # and needs it for Docker API interactions. Mitigated by socket proxy.
+    ipc: private
     logging:
       driver: json-file
       options:
@@ -810,28 +837,31 @@ services:
   # Profile: "monitor" (same as Watchtower)
   #
   # Security:
-  #  - Docker socket: read-only mount (cannot modify containers)
+  #  - Docker API via socket-proxy (no direct socket mount — prevents secret leakage via docker inspect)
   #  - DOZZLE_FILTER: only shows openclaw-* containers
   #  - DOZZLE_NO_ANALYTICS: disables telemetry to Dozzle maintainers
   #  - Port bound to 127.0.0.1 (local access only)
   #  - read-only root, all caps dropped, no_new_privileges
   dozzle:
-    image: "${DOZZLE_IMAGE:-amir20/dozzle:latest}"
+    image: "${DOZZLE_IMAGE:-amir20/dozzle:v8.8.2}"
     container_name: opendeclawed-dozzle
     profiles:
       - monitor
     networks:
       openclaw-internal: {}
       openclaw-egress: {}
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro
-    tmpfs:
-      - /tmp:size=32m,noexec,nosuid,nodev
+    # SECURITY: No direct Docker socket. Uses socket-proxy (same as Watchtower).
+    # Dozzle only needs container list + events for log streaming.
     environment:
+      - DOCKER_HOST=tcp://docker-socket-proxy:2375
       - DOZZLE_ADDR=:${DOZZLE_PORT:-5005}
       - DOZZLE_LEVEL=info
       - DOZZLE_FILTER=name=opendeclawed-*
       - DOZZLE_NO_ANALYTICS=true
+    dns:
+      - "${BLOCKY_IP:-172.27.0.53}"
+    tmpfs:
+      - /tmp:size=32m,noexec,nosuid,nodev
     ports:
       - "127.0.0.1:${DOZZLE_PORT:-5005}:${DOZZLE_PORT:-5005}"
     deploy:
@@ -839,17 +869,23 @@ services:
         limits:
           cpus: "${DOZZLE_CPUS:-0.25}"
           memory: "${DOZZLE_MEM:-64m}"
+          pids: 64
     read_only: true
     security_opt:
       - no-new-privileges:true
     cap_drop:
       - ALL
+    user: "65534:65534"
+    ipc: private
     logging:
       driver: json-file
       options:
         max-size: 5m
         max-file: 2
     restart: unless-stopped
+    depends_on:
+      docker-socket-proxy:
+        condition: service_started
 
   # ─────────────────────────────────────────────────────────────────────
   # OPENCLAW-CLI: Interactive CLI for onboarding and debugging
@@ -863,9 +899,9 @@ services:
   #  - Grants NET_RAW for ping/traceroute if needed
   #
   # Security:
-  #  - Runs as user 0:0 (root) for CLI flexibility
+  #  - Runs as node user (1000:1000), matching upstream image
   #  - cap_add: [NET_RAW] for network diagnostics
-  #  - Other caps still dropped
+  #  - Other caps still dropped, no_new_privileges, ipc isolated
   #  - Read-write home volume for credentials/config
   openclaw-cli:
     image: "${OPENCLAW_IMAGE:-openclaw:local}"
@@ -883,8 +919,8 @@ services:
       - ${OPENCLAW_CONFIG_DIR:-~/.openclaw}:/home/node/.openclaw:rw
       - ${OPENCLAW_WORKSPACE_DIR:-~/.openclaw/workspace}:/home/node/.openclaw/workspace:rw
     tmpfs:
-      - /tmp:size=1g,noexec,nosuid
-      - /run:size=256m,noexec,nosuid
+      - /tmp:size=1g,noexec,nosuid,nodev
+      - /run:size=256m,noexec,nosuid,nodev
     environment:
       - HOME=/home/node
       - TERM=xterm-256color
@@ -896,10 +932,20 @@ services:
       - GATEWAY_HOST=openclaw-gateway
       - GATEWAY_PORT=${GATEWAY_PORT:-18789}
       - LOG_LEVEL=${LOG_LEVEL:-debug}
+    deploy:
+      resources:
+        limits:
+          cpus: "1"
+          memory: "2g"
+          pids: 256
+    security_opt:
+      - no-new-privileges:true
     cap_drop:
       - ALL
     cap_add:
       - NET_RAW
+    user: "1000:1000"
+    ipc: private
     logging:
       driver: json-file
       options:

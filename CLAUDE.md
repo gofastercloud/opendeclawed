@@ -45,7 +45,7 @@ docker-compose down -v  # Remove volumes too
 
 **Request flow**: External → Cloudflare Tunnel/Tailscale → openclaw-gateway:18789 → LiteLLM:4000 → llama-chat:8091 / llama-embed:8090
 
-**Egress firewall**: Persistent sidecar (not one-shot init) with 60s iptables re-check loop on DOCKER-USER chain. Drops RFC1918, link-local, multicast. All containers use blocky:53 (static IP 172.27.0.53) for DNS-level threat filtering.
+**Egress firewall**: Persistent sidecar (not one-shot init) with 60s iptables re-check loop on DOCKER-USER chain. Drops RFC1918, link-local, multicast. Gateway and all egress containers use blocky:53 (static IP 172.27.0.53) for DNS-level threat filtering.
 
 **LiteLLM abstraction**: `litellm_config.yaml` routes model names to backends. Swap llama.cpp ↔ MLX ↔ Ollama without changing openclaw config.
 

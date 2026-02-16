@@ -286,10 +286,10 @@ else
     info "Installing pre-commit (git hook framework)..."
     if command -v brew >/dev/null 2>&1; then
         brew install pre-commit 2>/dev/null || true
-    elif command -v pip3 >/dev/null 2>&1; then
-        pip3 install --user pre-commit 2>/dev/null \
-            || pip3 install --break-system-packages pre-commit 2>/dev/null \
-            || true
+    elif command -v uv >/dev/null 2>&1; then
+        uv tool install pre-commit 2>/dev/null || true
+    elif command -v pipx >/dev/null 2>&1; then
+        pipx install pre-commit 2>/dev/null || true
     fi
     if command -v pre-commit >/dev/null 2>&1; then
         info "pre-commit installed."
@@ -477,6 +477,15 @@ else
 fi
 save_env OPENCLAW_GATEWAY_TOKEN "${OPENCLAW_GATEWAY_TOKEN}"
 
+# ── Generate LiteLLM master key (internal-only, random per install) ──
+if [ -n "${LITELLM_MASTER_KEY:-}" ] && [ "${LITELLM_MASTER_KEY}" != "sk-opendeclawed-internal" ]; then
+    info "Using existing LiteLLM master key."
+else
+    LITELLM_MASTER_KEY="sk-litellm-$(openssl rand -hex 16)"
+    info "Generated random LiteLLM master key."
+fi
+save_env LITELLM_MASTER_KEY "${LITELLM_MASTER_KEY}"
+
 # Also persist non-secret config to .env
 save_env OPENCLAW_CONFIG_DIR "${CONFIG_DIR}"
 save_env OPENCLAW_WORKSPACE_DIR "${WORKSPACE_DIR}"
@@ -585,7 +594,7 @@ else
     TELEGRAM_BOT_TOKEN="${TELEGRAM_BOT_TOKEN}" \
     INGRESS_MODE="${INGRESS_MODE}" \
     LITELLM_PORT="${LITELLM_PORT:-4000}" \
-    LITELLM_MASTER_KEY="${LITELLM_MASTER_KEY:-sk-opendeclawed-internal}" \
+    LITELLM_MASTER_KEY="${LITELLM_MASTER_KEY}" \
     OPENCLAW_JSON_PATH="${OPENCLAW_JSON}" \
     OPENCLAW_GATEWAY_TOKEN="${OPENCLAW_GATEWAY_TOKEN}" \
     TS_HOSTNAME="${TS_HOSTNAME:-openclaw}" \
@@ -1114,7 +1123,7 @@ echo ""
 case "${INGRESS_MODE}" in
     local)
         echo "  Access URLs:"
-        echo "    Dashboard:    http://localhost:${GATEWAY_PORT:-18789}/?token=${OPENCLAW_GATEWAY_TOKEN}"
+        echo "    Dashboard:    http://localhost:${GATEWAY_PORT:-18789}/?token=<see ~/.openclaw/.gateway-token>"
         echo "    Dozzle Logs:  http://127.0.0.1:${DOZZLE_PORT:-5005}/"
         ;;
     tunnel)
