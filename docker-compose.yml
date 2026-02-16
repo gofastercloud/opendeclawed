@@ -55,6 +55,7 @@
 #  - Default: Local-only mode (gateway on 127.0.0.1 via port mapping)
 #  - "tunnel": Enable Cloudflare tunnel ingress (cloudflared service)
 #  - "tailscale": Enable Tailscale mesh VPN ingress (WireGuard-based)
+#  - "meshnet": Enable NordVPN Meshnet ingress (peer-to-peer, profile: meshnet)
 #  - "monitor": Enable Uptime Kuma + Watchtower (health + auto-update)
 #  - "cli": Enable openclaw-cli for onboarding/debugging (interactive)
 #
@@ -626,6 +627,120 @@ services:
       - "com.centurylinklabs.watchtower.enable=false"
 
   # ─────────────────────────────────────────────────────────────────────
+  # NORDVPN MESHNET: Peer-to-peer mesh VPN ingress (optional, profile: meshnet)
+  # ─────────────────────────────────────────────────────────────────────
+  # Provides a routable meshnet IP for inbound connections from your
+  # NordVPN meshnet peers. Only meshnet traffic passes through this
+  # container — regular internet egress is unaffected.
+  #
+  # Profile: "meshnet"
+  #  - Enable with: docker compose --profile meshnet up -d
+  #  - Requires NORDVPN_TOKEN env var
+  #
+  # Security:
+  #  - Isolated to openclaw-meshnet network (cannot reach internal or egress)
+  #  - Traffic is inbound only (your devices → dashboards)
+  #  - iptables DNAT forwards meshnet:443 → caddy (sole bridge to services)
+  #  - cap_add: NET_ADMIN + NET_RAW (required for WireGuard + iptables)
+  #  - Read-only root, all other caps dropped
+  #  - Persistent state volume avoids re-auth on restart
+  nordvpn-meshnet:
+    build:
+      context: ./nordvpn
+      dockerfile: Dockerfile
+    image: "${NORDVPN_IMAGE:-opendeclawed-nordvpn:local}"
+    container_name: opendeclawed-nordvpn
+    profiles:
+      - meshnet
+    networks:
+      openclaw-meshnet: {}
+    volumes:
+      - nordvpn-state:/var/lib/nordvpn
+    tmpfs:
+      - /tmp:size=64m,noexec,nosuid,nodev
+      - /run:size=32m,noexec,nosuid,nodev
+    environment:
+      - NORDVPN_TOKEN=${NORDVPN_TOKEN:-}
+      - CADDY_IP=${CADDY_IP:-}
+      - CADDY_PORT=443
+    deploy:
+      resources:
+        limits:
+          cpus: "${NORDVPN_CPUS:-0.5}"
+          memory: "${NORDVPN_MEM:-256m}"
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: 3
+    restart: unless-stopped
+    depends_on:
+      egress-firewall:
+        condition: service_started
+    labels:
+      - "com.centurylinklabs.watchtower.enable=false"
+
+  # ─────────────────────────────────────────────────────────────────────
+  # MESHNET-CADDY: TLS reverse proxy for meshnet ingress (profile: meshnet)
+  # ─────────────────────────────────────────────────────────────────────
+  # Bridges openclaw-meshnet (receives traffic from nordvpn DNAT) and
+  # openclaw-egress (proxies to gateway, Kuma, Dozzle). This is the ONLY
+  # container that spans both networks — the sole path from meshnet to services.
+  #
+  # Security:
+  #  - Self-signed TLS by default (meshnet peers trust manually)
+  #  - Read-only root, all caps dropped
+  #  - No internet access (openclaw-meshnet is internal, egress is firewall-controlled)
+  meshnet-caddy:
+    image: "${CADDY_IMAGE:-caddy:alpine}"
+    container_name: opendeclawed-meshnet-caddy
+    profiles:
+      - meshnet
+    networks:
+      openclaw-meshnet: {}
+      openclaw-egress: {}
+    volumes:
+      - ./nordvpn/Caddyfile:/etc/caddy/Caddyfile:ro
+    tmpfs:
+      - /tmp:size=32m,noexec,nosuid,nodev
+      - /data:size=64m
+      - /config:size=16m
+    environment:
+      - GATEWAY_PORT=${GATEWAY_PORT:-18789}
+      - DOZZLE_PORT=${DOZZLE_PORT:-5005}
+    deploy:
+      resources:
+        limits:
+          cpus: "${CADDY_CPUS:-0.25}"
+          memory: "${CADDY_MEM:-64m}"
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    logging:
+      driver: json-file
+      options:
+        max-size: 5m
+        max-file: 2
+    restart: unless-stopped
+    depends_on:
+      nordvpn-meshnet:
+        condition: service_healthy
+      openclaw-gateway:
+        condition: service_healthy
+    labels:
+      - "com.centurylinklabs.watchtower.enable=false"
+
+  # ─────────────────────────────────────────────────────────────────────
   # DOCKER-SOCKET-PROXY: Least-privilege Docker API access for Watchtower
   # ─────────────────────────────────────────────────────────────────────
   # Instead of giving Watchtower direct access to /var/run/docker.sock
@@ -996,6 +1111,20 @@ networks:
       config:
         - subnet: "${EGRESS_SUBNET:-172.28.0.0/24}"
 
+  # ─────────────────────────────────────────────────────────────────────
+  # OPENCLAW-MESHNET: Isolated NordVPN mesh network (no internet)
+  # ─────────────────────────────────────────────────────────────────────
+  # Dedicated network for NordVPN meshnet container and Caddy proxy.
+  # Internal (no internet access). Only meshnet-caddy bridges this to
+  # openclaw-egress where services live. No other container can reach
+  # meshnet peers.
+  openclaw-meshnet:
+    driver: bridge
+    internal: true
+    ipam:
+      config:
+        - subnet: "${MESHNET_SUBNET:-172.29.0.0/24}"
+
 volumes:
   # ─────────────────────────────────────────────────────────────────────
   # UPTIME-KUMA-DATA: Persistent monitoring state
@@ -1012,6 +1141,14 @@ volumes:
   # Stores WireGuard keys and auth state. Persisting this avoids
   # re-authentication on container restart.
   tailscale-state:
+    driver: local
+
+  # ─────────────────────────────────────────────────────────────────────
+  # NORDVPN-STATE: Persistent NordVPN auth and meshnet state
+  # ─────────────────────────────────────────────────────────────────────
+  # Stores login credentials and WireGuard keys. Persisting this avoids
+  # re-authentication on container restart.
+  nordvpn-state:
     driver: local
 
   uptime-kuma-data:
