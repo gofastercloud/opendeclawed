@@ -14,7 +14,8 @@ CADDY_PORT="${CADDY_PORT:-443}"
 # The daemon manages the WireGuard tunnel for meshnet.
 cleanup() {
     echo "Shutting down NordVPN meshnet..."
-    nordvpn logout 2>/dev/null || true
+    # NOTE: Do NOT call "nordvpn logout" — it revokes the access token permanently.
+    # Session state is preserved in the nordvpn-state volume for next startup.
     kill "${DAEMON_PID:-}" 2>/dev/null || true
     exit 0
 }
@@ -43,21 +44,25 @@ done
 nordvpn set analytics off 2>/dev/null || true
 
 # ── Login and enable meshnet ────────────────────────────────────────
-# Clear any stale session, then login fresh with token
-nordvpn logout 2>/dev/null || true
-nordvpn login --token "${NORDVPN_TOKEN}"
+# Try login with token. If already logged in from a previous run
+# (state persisted in nordvpn-state volume), skip login.
+# NOTE: Do NOT logout — NordVPN revokes access tokens on logout.
+if nordvpn account >/dev/null 2>&1; then
+    echo "Already logged in (session from volume)."
+else
+    nordvpn login --token "${NORDVPN_TOKEN}"
+fi
 
 # Enable meshnet (peer-to-peer, no full VPN tunnel)
-nordvpn set meshnet on
-nordvpn set mesh-receive on
+nordvpn set meshnet on || echo "Meshnet already enabled."
 
-echo "Meshnet enabled. Waiting for peer connections..."
+echo "Meshnet enabled. Waiting for interface..."
 
 # ── Detect meshnet IP ───────────────────────────────────────────────
+# The meshnet IP is assigned to the nordlynx WireGuard interface.
 MESH_IP=""
 for i in $(seq 1 30); do
-    MESH_IP=$(nordvpn meshnet peer list 2>/dev/null \
-        | grep -oE 'Address: [0-9.]+' | head -1 | awk '{print $2}') || true
+    MESH_IP=$(ip -4 addr show nordlynx 2>/dev/null | awk '/inet / {split($2,a,"/"); print a[1]}') || true
     if [ -n "${MESH_IP}" ]; then
         echo "Meshnet IP: ${MESH_IP}"
         break
@@ -67,7 +72,7 @@ done
 
 if [ -z "${MESH_IP}" ]; then
     echo "WARNING: Could not detect meshnet IP. DNAT rules not installed." >&2
-    echo "Check: nordvpn meshnet peer list" >&2
+    echo "Check: ip addr show nordlynx" >&2
 fi
 
 # ── iptables DNAT: forward meshnet:443 → caddy ─────────────────────

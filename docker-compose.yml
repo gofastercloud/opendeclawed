@@ -674,13 +674,13 @@ services:
         limits:
           cpus: "${NORDVPN_CPUS:-0.5}"
           memory: "${NORDVPN_MEM:-256m}"
-    # Note: Broader privileges than other containers — nordvpnd manages WireGuard
-    # tunnels, spawns norduserd, and creates network interfaces. Acceptable because
-    # this container is network-isolated to openclaw-meshnet (internal: true).
-    cap_add:
-      - NET_ADMIN
-      - NET_RAW
-      - SYS_MODULE
+    # Privileged mode required — nordvpnd manages WireGuard tunnels, modifies
+    # sysctls (rp_filter), creates network interfaces, and spawns norduserd.
+    # Acceptable because this container is network-isolated to openclaw-meshnet
+    # (internal: true) and cannot reach internal services directly.
+    privileged: true
+    sysctls:
+      - net.ipv6.conf.all.disable_ipv6=1
     logging:
       driver: json-file
       options:
