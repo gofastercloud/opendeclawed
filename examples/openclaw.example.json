@@ -1,0 +1,57 @@
+{
+  "agent": {
+    "model": "anthropic/claude-sonnet-4-5-20250929"
+  },
+
+  "heartbeat": {
+    "enabled": true,
+    "intervalMinutes": 60,
+    "model": "anthropic/claude-haiku-4-5-20251001"
+  },
+
+  "models": {
+    "routing": {
+      "default":   "anthropic/claude-sonnet-4-5-20250929",
+      "heartbeat": "anthropic/claude-haiku-4-5-20251001",
+      "quick":     "anthropic/claude-haiku-4-5-20251001",
+      "reasoning": "anthropic/claude-opus-4-6",
+      "embedding": "local/nomic-embed"
+    }
+  },
+
+  "providers": {
+    "anthropic": {
+      "type": "api-key",
+      "apiKey": "sk-ant-REPLACE_ME"
+    },
+    "local-llm": {
+      "type": "openai-compatible",
+      "baseUrl": "http://llama-chat:8091/v1",
+      "apiKey": "not-needed",
+      "models": ["local/llama-3.2-3b"]
+    },
+    "local-embed": {
+      "type": "openai-compatible",
+      "baseUrl": "http://llama-embed:8090/v1",
+      "apiKey": "not-needed",
+      "models": ["local/nomic-embed"]
+    }
+  },
+
+  "security": {
+    "dmPolicy": "pairing",
+    "allowlist": [],
+    "elevated": false,
+    "sandbox": "strict"
+  },
+
+  "gateway": {
+    "bind": "0.0.0.0",
+    "port": 18789,
+    "tailscale": false
+  },
+
+  "telemetry": {
+    "enabled": false
+  }
+}

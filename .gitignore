@@ -1,0 +1,23 @@
+# Secrets — NEVER commit these
+.env
+*.token
+
+# Downloaded models (large binary files)
+models/
+
+# Docker volumes
+volumes/
+
+# macOS
+.DS_Store
+._*
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Logs
+*.log

@@ -1,0 +1,25 @@
+{
+  "name": "safe-install",
+  "version": "1.0.0",
+  "description": "Securely vet, scan, and install OpenClaw skills. Checks VirusTotal, reviews permissions, and enforces allowlist before installation.",
+  "author": "opendeclawed",
+  "license": "MIT",
+  "triggers": [
+    "install skill *",
+    "add skill *",
+    "vet skill *",
+    "check skill *"
+  ],
+  "permissions": [
+    "read",
+    "write",
+    "net:api"
+  ],
+  "required_env": [
+    "VIRUSTOTAL_API_KEY"
+  ],
+  "optional_env": [
+    "SKILLS_ALLOWLIST_PATH",
+    "SKILL_QUARANTINE_DIR"
+  ]
+}

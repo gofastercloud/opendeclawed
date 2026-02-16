@@ -1,0 +1,22 @@
+# Pre-commit hooks for OpenDeclawed
+# Install: pip install pre-commit && pre-commit install
+# Run manually: pre-commit run --all-files
+repos:
+  - repo: https://github.com/trufflesecurity/trufflehog
+    rev: v3.88.0
+    hooks:
+      - id: trufflehog
+        name: TruffleHog — secrets detection
+        entry: trufflehog git file://. --since-branch HEAD --only-verified --fail
+        language: system
+        stages: [pre-commit]
+
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: check-added-large-files
+        args: ['--maxkb=500']
+      - id: check-merge-conflict
+      - id: detect-private-key
+      - id: end-of-file-fixer
+      - id: trailing-whitespace

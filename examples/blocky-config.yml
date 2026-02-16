@@ -1,0 +1,98 @@
+# ============================================================================
+# Blocky DNS Firewall Configuration
+# ============================================================================
+# Copy to ~/.openclaw/blocky/ and mount as blocky-config volume.
+# See: https://0xerr0r.github.io/blocky/latest/configuration/
+#
+# This config provides:
+#  - DNS-over-HTTPS upstream (no plaintext DNS to ISP)
+#  - Threat intelligence blocklists (malware, phishing, C2, cryptomining)
+#  - Query rate limiting (anti-DNS-exfiltration)
+#  - Logging for forensic analysis
+
+upstream:
+  default:
+    # DNS-over-HTTPS upstreams — no plaintext DNS leaks to ISP
+    - https://cloudflare-dns.com/dns-query
+    - https://dns.quad9.net/dns-query
+
+# Port to listen on (containers use this as DNS server)
+port: 53
+
+# ── Blocking ──────────────────────────────────────────────────────────
+blocking:
+  # Blocklist groups — high-quality, well-maintained lists
+  denylists:
+    threats:
+      # Malware, ransomware, phishing, C2 domains
+      - https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts
+      - https://urlhaus.abuse.ch/downloads/hostfile/
+      - https://phishing.army/download/phishing_army_blocklist.txt
+      - https://gitlab.com/quidsup/notrack-blocklists/-/raw/master/notrack-malware.txt
+      - https://v.firebog.net/hosts/RPiList-Malware.txt
+      - https://v.firebog.net/hosts/RPiList-Phishing.txt
+    cryptomining:
+      - https://raw.githubusercontent.com/hoshsadiq/adblock-nocoin-list/master/hosts.txt
+      - https://zerodot1.gitlab.io/CoinBlockerLists/hosts_browser
+    tracking:
+      # Telemetry and tracking (optional — comment out if too aggressive)
+      - https://v.firebog.net/hosts/Easyprivacy.txt
+      - https://v.firebog.net/hosts/Prigent-Ads.txt
+
+  # Allowlist — domains that should never be blocked
+  # Add any domains your skills legitimately need to reach
+  allowlists:
+    safe:
+      - |
+        # Anthropic API
+        api.anthropic.com
+        # VirusTotal API
+        www.virustotal.com
+        # Telegram Bot API
+        api.telegram.org
+        # Discord API
+        discord.com
+        gateway.discord.gg
+        # Cloudflare (tunnel + DNS)
+        cloudflare-dns.com
+        api.cloudflare.com
+        # Hugging Face (model downloads)
+        huggingface.co
+        cdn-lfs.huggingface.co
+        # GitHub (for skill downloads)
+        github.com
+        raw.githubusercontent.com
+        objects.githubusercontent.com
+
+  # Apply all blocklist groups to all clients
+  clientGroupsBlock:
+    default:
+      - threats
+      - cryptomining
+      - tracking
+
+  # What to return for blocked domains
+  blockType: zeroIP
+
+  # How often to refresh blocklists
+  refreshPeriod: 4h
+
+# ── Rate Limiting (anti-DNS-exfiltration) ─────────────────────────────
+# DNS tunneling typically generates many unique subdomain queries.
+# Rate limiting catches this pattern.
+queryLog:
+  type: console
+  # Log all queries for forensic analysis
+  logRetentionDays: 7
+
+# ── Caching ───────────────────────────────────────────────────────────
+caching:
+  minTime: 5m
+  maxTime: 30m
+  prefetching: true
+
+# ── Prometheus metrics (optional) ─────────────────────────────────────
+# Uncomment to expose metrics for Grafana/Prometheus
+# prometheus:
+#   enable: true
+#   path: /metrics

@@ -1,0 +1,26 @@
+{
+  "_comment": "Skills allowlist for OpenClaw. Only skills listed here can be installed/enabled.",
+  "_format": "Each entry: skill slug → { version, sha256 of skill archive, source, approved_by, approved_at }",
+  "_enforcement": "The safe-install skill checks this file before enabling any skill.",
+
+  "allowlist": {
+    "example-skill": {
+      "version": "1.0.0",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "source": "clawhub",
+      "approved_by": "safe-install",
+      "approved_at": "2026-01-01T00:00:00Z",
+      "virustotal_clean": true,
+      "notes": "Placeholder entry — replace with real skills"
+    }
+  },
+
+  "policy": {
+    "enforce": true,
+    "reject_unsigned": true,
+    "require_virustotal": true,
+    "max_permissions": ["read", "write", "net:api"],
+    "blocked_permissions": ["net:lan", "fs:root", "exec:shell", "cap:*"],
+    "auto_quarantine_on_fail": true
+  }
+}

@@ -1,0 +1,26 @@
+# TruffleHog custom configuration for OpenDeclawed
+# TruffleHog has 800+ built-in detectors including Anthropic API keys.
+# This config adds exclude paths so scanning doesn't flag examples/templates.
+
+# Paths to exclude from scanning (these intentionally contain placeholder patterns)
+exclude_paths:
+  - .env.example
+  - examples/openclaw.example.json
+  - docs/prerequisites.md
+  - docs/setup-guide.md
+  - docs/blog-post-draft.md
+  - CONTRIBUTING.md
+  - README.md
+  - "*.md"
+
+# Detectors are all enabled by default. TruffleHog natively detects:
+#   - Anthropic API keys (sk-ant-api03-...)
+#   - GitHub tokens
+#   - Cloudflare API tokens
+#   - Discord bot tokens
+#   - Telegram bot tokens
+#   - NordVPN tokens
+#   - Generic high-entropy strings
+#   - Private keys (RSA, ECDSA, Ed25519)
+#   - AWS, GCP, Azure credentials
+#   - 800+ more patterns
