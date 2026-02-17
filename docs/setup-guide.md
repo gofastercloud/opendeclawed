@@ -11,9 +11,11 @@
 7. [Container Image Hardening](#container-image-hardening)
 8. [Messaging Integration: Telegram](#messaging-telegram)
 9. [Messaging Integration: WhatsApp](#messaging-whatsapp)
-10. [Additional Security Hardening](#additional-security-hardening)
-11. [Operational Security Checklist](#operational-security-checklist)
-12. [Maintenance & Monitoring](#maintenance--monitoring)
+10. [Local Inference (Ollama)](#local-inference-ollama)
+11. [Web Search (SearXNG)](#web-search-searxng)
+12. [Additional Security Hardening](#additional-security-hardening)
+13. [Operational Security Checklist](#operational-security-checklist)
+14. [Maintenance & Monitoring](#maintenance--monitoring)
 
 ---
 
@@ -52,6 +54,11 @@
          │  │   routes to Ollama on host via      │     │
          │  │   host.docker.internal:11434        │     │
          │  └────────────────────────────────────┘     │
+         │  ┌────────────────────────────────────┐     │
+         │  │   searxng (metasearch engine)       │     │
+         │  │   JSON API for agent web search     │     │
+         │  │   internal + egress networks        │     │
+         │  └────────────────────────────────────┘     │
          └─────────────────────────────────────────────┘
 ```
 
@@ -63,6 +70,7 @@
 - Docker Compose V2 (included with OrbStack)
 - ~10GB disk for models + containers
 - An Anthropic API key OR Claude Pro/Max subscription
+- Ollama for local inference (https://ollama.com) — or run `scripts/setup-ollama.sh`
 - A domain on Cloudflare (Option A) OR Tailscale account (Option B)
 
 ---
@@ -517,6 +525,71 @@ model_list:
 Then restart: `docker compose restart litellm`
 
 `host.docker.internal` resolves to your Mac's IP from inside Docker containers. This works for Ollama, MLX (`mlx_lm.server`), LM Studio, vLLM, or any OpenAI-compatible endpoint.
+
+**Note**: The `extra_hosts: ["host.docker.internal:host-gateway"]` directive in `docker-compose.yml` is required for LiteLLM to reach Ollama on the host. Without it, DNS resolution for `host.docker.internal` fails because LiteLLM uses blocky for DNS.
+
+---
+
+## Local Inference (Ollama)
+
+Ollama provides local LLM inference on your Mac. LiteLLM routes requests to Ollama via `host.docker.internal:11434`, so the gateway never needs direct host network access.
+
+### Quick setup
+
+```bash
+# Install Ollama and pull default models
+./scripts/setup-ollama.sh
+```
+
+This installs Ollama (via Homebrew or the official installer), sets `OLLAMA_HOST=0.0.0.0` so Docker containers can reach it, and pulls:
+- **qwen3:8b** — local chat/reasoning model
+- **nomic-embed-text** — 768-dimensional embeddings for memory search
+
+### Verifying connectivity
+
+```bash
+# From host
+curl http://localhost:11434/api/tags
+
+# From inside a container
+docker exec opendeclawed-litellm python -c "import urllib.request; print(urllib.request.urlopen('http://host.docker.internal:11434/api/tags').read()[:200])"
+```
+
+### Swapping models
+
+Edit `litellm_config.yaml` to change model names or add backends, then restart: `docker compose restart litellm`. No gateway restart needed.
+
+### Important: host.docker.internal
+
+LiteLLM uses blocky for DNS, which doesn't know about Docker's special `host.docker.internal` hostname. The `extra_hosts` directive in `docker-compose.yml` resolves this by mapping it to the host gateway IP at container start.
+
+---
+
+## Web Search (SearXNG)
+
+Agents search the web via a self-hosted SearXNG metasearch engine. The built-in `web_search` tool is denied in `openclaw.json`; instead, a workspace skill instructs agents to query the local SearXNG JSON API.
+
+### How it works
+
+1. Agent receives a search request
+2. Workspace skill triggers, instructing the agent to use `curl` against `http://searxng:8080/search?q=QUERY&format=json`
+3. SearXNG aggregates results from Google, Bing, DuckDuckGo, Wikipedia, and Brave
+4. All outbound search traffic goes through blocky (DNS-filtered) and the egress firewall
+5. No third-party search API keys needed — SearXNG scrapes public search engines
+
+### Configuration
+
+- SearXNG settings: `examples/searxng-settings.yml`
+- Workspace skill: `~/.openclaw/workspace/skills/searxng-search/SKILL.md`
+- Blocky allowlist: search engine domains in `examples/blocky-config.yml`
+- Skill registration: `openclaw.json` → `skills.entries.searxng-search`
+
+### Verifying
+
+```bash
+# Test from gateway container
+docker exec opendeclawed-gateway curl -s 'http://searxng:8080/search?q=test&format=json' | jq '.results | length'
+```
 
 ---
 

@@ -17,7 +17,9 @@ docker --version        # 20.10+
 docker compose version  # 2.0+
 ```
 
-**RAM**: 4GB minimum for the Docker stack. LLM inference is handled by Ollama on the host (install separately via https://ollama.com).
+**RAM**: 4GB minimum for the Docker stack. Add 4-8GB for Ollama local inference on the host (model-dependent). Total recommended: 8-16GB.
+
+**Ollama** (recommended): Local LLM inference for chat and embeddings. Install via https://ollama.com or run `scripts/setup-ollama.sh`. Ollama runs on the host (not in Docker) and is reached by LiteLLM via `host.docker.internal:11434`.
 
 **Disk**: ~4GB free — container images (~3GB), runtime volumes (~1GB).
 
@@ -119,7 +121,7 @@ mkdir -p ~/.openclaw/blocky
 cp examples/blocky-config.yml ~/.openclaw/blocky/config.yml
 ```
 
-The default config blocks malware, phishing, C2, and cryptomining domains while allowing known-good API endpoints (Anthropic, VirusTotal, Telegram, Cloudflare, HuggingFace, GitHub). Customize the allowlist in `~/.openclaw/blocky/config.yml` if your skills need to reach additional domains.
+The default config blocks malware, phishing, C2, and cryptomining domains while allowing known-good API endpoints (Anthropic, VirusTotal, Telegram, Cloudflare, HuggingFace, GitHub). The default blocky config also allows search engine domains (google.com, bing.com, duckduckgo.com, etc.) for the SearXNG metasearch service. Customize the allowlist in `~/.openclaw/blocky/config.yml` if your skills need to reach additional domains.
 
 Upstream DNS uses DNS-over-HTTPS (Cloudflare + Quad9) so no plaintext DNS queries leak to your ISP.
 
@@ -152,6 +154,7 @@ chmod 600 ~/.openclaw/skills.allowlist.json
 | Tailscale auth key | `.env` (`TS_AUTHKEY`) | `setup.sh` |
 | Telegram bot token | `~/.openclaw/openclaw.json` | `setup.sh` |
 | Gateway pairing secret | `~/.openclaw/openclaw.json` | `setup.sh` (auto-generated) |
+| SearXNG secret key | `.env` (`SEARXNG_SECRET_KEY`) | `setup.sh` (auto-generated) |
 
 ### Never commit secrets
 
@@ -203,6 +206,7 @@ Before running `setup.sh`, confirm:
 - [ ] Docker 20.10+ and Compose v2 installed and working
 - [ ] 4GB+ RAM available for Docker containers (Ollama uses additional host RAM)
 - [ ] ~4GB free disk space
+- [ ] Ollama installed and running (`ollama list` shows models) -- or plan to run `scripts/setup-ollama.sh`
 - [ ] Anthropic API key ready (with spend limit set)
 - [ ] VirusTotal API key ready (free tier is fine)
 - [ ] Blocky DNS config copied to `~/.openclaw/blocky/config.yml`

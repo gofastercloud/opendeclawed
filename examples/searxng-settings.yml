@@ -11,7 +11,7 @@ use_default_settings: true
 
 general:
   instance_name: "OpenDeclawed Search"
-  debug: true
+  debug: false
   # Disable public instance features
   donation_url: false
   contact_url: false

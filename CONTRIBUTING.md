@@ -43,7 +43,7 @@ The egress firewall runs as a `restart: unless-stopped` sidecar with a 60-second
 Never mount `/var/run/docker.sock` directly into application containers. Route Docker API access through `tecnativa/docker-socket-proxy` with least-privilege environment flags. Deny `EXEC`, `VOLUMES`, `NETWORKS`, `SECRETS` unless there's an explicit need.
 
 ### DNS filtering via blocky
-All containers on the egress network should use `dns: blocky` for DNS resolution. If your service needs to reach a new external domain, add it to the allowlist in `examples/blocky-config.yml` and document why.
+All containers on the egress network should use `dns: blocky` for DNS resolution. If your service needs to reach a new external domain, add it to the allowlist in `examples/blocky-config.yml` and document why. The allowlist already includes search engine domains for SearXNG (Google, Bing, DuckDuckGo, Wikipedia, Brave).
 
 ### Shell injection prevention
 Never use `eval` for variable assignment in shell scripts. Use `printf -v "$var_name" '%s' "$value"` instead. When embedding secrets in heredocs, use quoted heredocs (`'EOF'`) and pass secrets via environment variables — never shell interpolation.
@@ -55,7 +55,7 @@ When downloading and installing external artifacts (skills, plugins, models), al
 When extracting archives, validate all paths before extraction using `tar tzf` + `os.path.normpath`. Reject entries containing `../` or absolute paths.
 
 ### Container hardening baseline
-Every new container must include: `read_only: true` (where possible), `cap_drop: ALL`, `no_new_privileges: true`, least-privileged user (`65534:65534` unless the upstream image or function requires otherwise), `ipc: private`, resource limits (`mem_limit`, `cpus`, `pids_limit`), and `noexec,nosuid,nodev` on tmpfs mounts. If root or a non-standard user is required, document the reason in a comment.
+Every new container must include: `read_only: true` (where possible), `cap_drop: ALL`, `no_new_privileges: true`, least-privileged user (`65534:65534` unless the upstream image or function requires otherwise), `ipc: private`, resource limits (`mem_limit`, `cpus`, `pids_limit`), and `noexec,nosuid,nodev` on tmpfs mounts. If root or a non-standard user is required, document the reason in a comment. See the `searxng` service in `docker-compose.yml` for a reference example of a fully hardened container.
 
 ### Secrets detection (TruffleHog)
 A pre-commit hook runs TruffleHog on every commit to catch leaked API keys, tokens, and high-entropy strings. Install with `pre-commit install` after cloning. For manual scans: `./scripts/scan-secrets.sh`. If your change triggers a false positive, add the path to `.trufflehog-config.yaml`.

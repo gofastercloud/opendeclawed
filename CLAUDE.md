@@ -35,19 +35,26 @@ docker compose config
 # Stop
 docker-compose down
 docker-compose down -v  # Remove volumes too
+
+# Local inference setup (Ollama + models)
+./scripts/setup-ollama.sh
 ```
 
 ## Architecture
 
 **Network topology** — two isolated Docker networks:
-- `openclaw-internal` (172.27.0.0/24, `internal: true`): litellm, openclaw-gateway, blocky, docker-socket-proxy, watchtower, dozzle, cloudflared, tailscale, openclaw-cli — no internet access
-- `openclaw-egress` (172.28.0.0/24): openclaw-gateway, blocky, cloudflared, tailscale, dozzle, openclaw-cli — egress-firewall controlled
+- `openclaw-internal` (172.27.0.0/24, `internal: true`): litellm, openclaw-gateway, blocky, docker-socket-proxy, watchtower, dozzle, cloudflared, tailscale, openclaw-cli, searxng — no internet access
+- `openclaw-egress` (172.28.0.0/24): openclaw-gateway, blocky, cloudflared, tailscale, dozzle, openclaw-cli, searxng — egress-firewall controlled
 
 **Request flow**: External → Cloudflare Tunnel/Tailscale → openclaw-gateway:18789 → LiteLLM:4000 → Ollama / external backends
 
 **Egress firewall**: Persistent sidecar (not one-shot init) with 5s iptables re-check loop on DOCKER-USER chain. Drops RFC1918, link-local, multicast. Gateway and all egress containers use blocky:53 (static IP 172.27.0.53) for DNS-level threat filtering.
 
 **LiteLLM abstraction**: `litellm_config.yaml` routes model names to backends. Swap Ollama ↔ MLX ↔ vLLM ↔ cloud APIs without changing openclaw config.
+
+**SearXNG search**: Self-hosted metasearch engine providing JSON API for agent web search. Built-in `web_search` is denied; agents use a workspace skill that queries `http://searxng:8080`. Config in `examples/searxng-settings.yml`.
+
+**Local inference**: Ollama runs on the host. LiteLLM routes to it via `host.docker.internal:11434` (requires `extra_hosts` in docker-compose.yml). Default models: `qwen3:8b` (chat), `nomic-embed-text` (embeddings). Setup: `scripts/setup-ollama.sh`.
 
 ## Key Files
 
@@ -59,7 +66,9 @@ docker-compose down -v  # Remove volumes too
 - `examples/blocky-config.yml` — DNS firewall rules with threat blocklists
 - `examples/openclaw.example.json` — Agent configuration template
 - `examples/skills.allowlist.json` — Skills vetting allowlist (SHA256 + VirusTotal)
+- `examples/searxng-settings.yml` — SearXNG metasearch engine config (agent-optimized, JSON API)
 - `examples/skills/safe-install/safe_install.py` — Skill vetting pipeline (static analysis → VirusTotal → allowlist)
+- `scripts/setup-ollama.sh` — Ollama installation and model pull helper
 
 ## Security Patterns (Required)
 

@@ -65,6 +65,14 @@
       "sandbox": {
         "mode": "non-main",
         "scope": "agent"
+      },
+      "memorySearch": {
+        "provider": "openai",
+        "model": "local-embed",
+        "remote": {
+          "baseUrl": "http://litellm:4000/v1/",
+          "apiKey": "sk-opendeclawed-internal"
+        }
       }
     }
   },
@@ -82,6 +90,9 @@
         "env": {
           "SEARXNG_URL": "http://searxng:8080"
         }
+      },
+      "safe-install": {
+        "enabled": true
       }
     }
   },
@@ -95,7 +106,12 @@
     },
     "auth": {
       "mode": "token",
-      "token": "REPLACE_ME_WITH_RANDOM_HEX"
+      "token": "REPLACE_ME_WITH_RANDOM_HEX",
+      "rateLimit": {
+        "maxAttempts": 10,
+        "windowMs": 60000,
+        "lockoutMs": 300000
+      }
     },
     "trustedProxies": ["172.28.0.0/24", "172.17.0.0/16", "192.168.65.0/24"],
     "tailscale": {

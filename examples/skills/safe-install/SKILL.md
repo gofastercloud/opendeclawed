@@ -1,3 +1,8 @@
+---
+name: safe-install
+description: "Use when the user asks to install a skill, add a skill, vet a skill, or check a skill. Runs a 6-step security pipeline: fetch, hash, static analysis, VirusTotal scan, allowlist update, and install. Also triggers on 'install skill <name>', 'vet skill <name>', or 'check skill <name>'."
+---
+
 # safe-install
 
 A security-first skill for vetting and installing OpenClaw skills. Designed to be used as a one-shot command via Telegram (or any messaging channel).

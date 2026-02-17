@@ -362,10 +362,28 @@ fi
 header "Step 3/9 — Config directories + .env"
 ###############################################################################
 
-mkdir -p "${CONFIG_DIR}" "${WORKSPACE_DIR}"
+mkdir -p "${CONFIG_DIR}" "${WORKSPACE_DIR}" "${WORKSPACE_DIR}/skills" "${WORKSPACE_DIR}/memory"
 chmod 700 "${CONFIG_DIR}"
 chmod 700 "${WORKSPACE_DIR}"
 info "Config: ${CONFIG_DIR} (mode 700)"
+
+# ── Install workspace skills ──────────────────────────────────────────
+# Copy bundled skills from examples/skills/ into the workspace so agents
+# can discover them. Existing skills are updated (overwritten) on re-run
+# to pick up frontmatter and content fixes.
+SKILLS_SRC="${REPO_DIR}/examples/skills"
+SKILLS_DST="${WORKSPACE_DIR}/skills"
+if [ -d "${SKILLS_SRC}" ]; then
+    mkdir -p "${SKILLS_DST}"
+    skill_count=0
+    for skill_dir in "${SKILLS_SRC}"/*/; do
+        [ -d "${skill_dir}" ] || continue
+        skill_name="$(basename "${skill_dir}")"
+        cp -r "${skill_dir}" "${SKILLS_DST}/${skill_name}"
+        skill_count=$((skill_count + 1))
+    done
+    info "Installed ${skill_count} workspace skill(s) to ${SKILLS_DST}"
+fi
 
 # Load existing .env if present (re-run scenario)
 if [ -f "${ENV_FILE}" ]; then
@@ -572,6 +590,15 @@ else
 fi
 save_env LITELLM_MASTER_KEY "${LITELLM_MASTER_KEY}"
 
+# ── SearXNG secret key ───────────────────────────────────────────────
+if [ -n "${SEARXNG_SECRET_KEY:-}" ]; then
+    info "Using existing SearXNG secret key."
+else
+    SEARXNG_SECRET_KEY="$(openssl rand -hex 32)"
+    info "Generated SearXNG secret key."
+fi
+save_env SEARXNG_SECRET_KEY "${SEARXNG_SECRET_KEY}"
+
 # Also persist non-secret config to .env
 save_env OPENCLAW_CONFIG_DIR "${CONFIG_DIR}"
 save_env OPENCLAW_WORKSPACE_DIR "${WORKSPACE_DIR}"
@@ -702,12 +729,36 @@ config = {
             "sandbox": {
                 "mode": "non-main",
                 "scope": "agent"
+            },
+            "memorySearch": {
+                "provider": "openai",
+                "model": "local-embed",
+                "remote": {
+                    "baseUrl": f"http://litellm:{litellm_port}/v1/",
+                    "apiKey": litellm_key
+                }
             }
         }
+    },
+    "tools": {
+        "deny": ["web_search"]
     },
     "commands": {
         "native": "auto",
         "nativeSkills": "auto"
+    },
+    "skills": {
+        "entries": {
+            "searxng-search": {
+                "enabled": True,
+                "env": {
+                    "SEARXNG_URL": "http://searxng:8080"
+                }
+            },
+            "safe-install": {
+                "enabled": True
+            }
+        }
     },
     "gateway": {
         "port": 18789,
@@ -719,7 +770,12 @@ config = {
         },
         "auth": {
             "mode": "token",
-            "token": gateway_token
+            "token": gateway_token,
+            "rateLimit": {
+                "maxAttempts": 10,
+                "windowMs": 60000,
+                "lockoutMs": 300000
+            }
         },
         "trustedProxies": ["172.28.0.0/24", "172.17.0.0/24", "192.168.65.0/24"],
         "tailscale": {

@@ -44,6 +44,7 @@ This document details the security hardening mechanisms in OpenDeclawed. The dep
 | Telemetry data exfiltration | Telemetry disabled by default (opt-in); no credentials or PII transmitted when enabled | Low |
 | LiteLLM proxy compromise | Internal network only, stateless (no DB), read-only root, all caps dropped, internal-only master key | Low |
 | Log viewer exposes sensitive data | Dozzle bound to 127.0.0.1, monitor profile only, DOZZLE_FILTER=opendeclawed-*, read-only socket, no analytics | Low |
+| Agent web search data leak | SearXNG self-hosted (no third-party search API keys), DNS-filtered via blocky, egress-firewall controlled | Medium |
 | Resource exhaustion (CPU/memory) | Deploy resource limits and reservations on every container | Medium |
 
 ### Not Mitigated (Accepted Risks)
@@ -152,6 +153,7 @@ Services run as the least-privileged user their function allows. Most run as **6
 | egress-firewall | root | Required for iptables rule installation via `apk add` and `iptables` |
 | docker-socket-proxy | root | Required for binding to port 2375 and Docker socket access |
 | watchtower | root | Required for Docker API interactions via socket proxy |
+| searxng | 65534:65534 | No special file access needed |
 | tailscale | root | Required for WireGuard tunnel setup (NET_ADMIN) |
 
 **Effect** (for unprivileged services):
@@ -183,6 +185,7 @@ Per-service capability grants:
 | blocky | NET_BIND_SERVICE | Bind to DNS port 53 |
 | watchtower | None | No special permissions needed |
 | dozzle | None | No special permissions needed |
+| searxng | None | No special permissions needed |
 | openclaw-cli | NET_RAW | Ping/traceroute diagnostics |
 
 **Linux capabilities reference**:
@@ -259,6 +262,7 @@ openclaw-internal (internal=true, 172.27.0.0/24)
 ├── dozzle             (log viewer, bridges internal + egress)
 ├── cloudflared        (tunnel, bridges internal + egress)
 ├── tailscale          (mesh VPN, bridges internal + egress)
+├── searxng             (metasearch, bridges internal + egress)
 └── openclaw-cli       (debugging, bridges internal + egress)
 
 openclaw-egress (172.28.0.0/24)
@@ -267,6 +271,7 @@ openclaw-egress (172.28.0.0/24)
 ├── cloudflared        (Cloudflare edge connectivity)
 ├── tailscale          (WireGuard tunnel)
 ├── dozzle             (port binding on 127.0.0.1:5005)
+├── searxng             (upstream search engine queries)
 └── openclaw-cli       (network diagnostics)
 
 host network
@@ -289,6 +294,7 @@ docker0 (host bridge)
 - Cloudflared needs access to Cloudflare edge
 - Blocky needs outbound for upstream DoH DNS resolution
 - Tailscale needs outbound for WireGuard coordination
+- SearXNG needs outbound for upstream search engine queries
 - Dozzle and openclaw-cli also bridge both networks
 - Allows legitimate external traffic with restrictions
 
