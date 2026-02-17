@@ -1132,19 +1132,21 @@ echo ""
 case "${INGRESS_MODE}" in
     local)
         echo "  Access URLs:"
-        echo "    Dashboard:    http://localhost:${GATEWAY_PORT:-18789}/?token=<see ~/.openclaw/.gateway-token>"
+        echo "    Gateway:      http://localhost:${GATEWAY_PORT:-18789}/?token=${OPENCLAW_GATEWAY_TOKEN}"
         echo "    Dozzle Logs:  http://127.0.0.1:${DOZZLE_PORT:-5005}/"
         ;;
     tunnel)
         TUNNEL_HOST="${CLOUDFLARE_TUNNEL_ROUTE:-openclaw.example.com}"
         echo "  Access URLs:"
-        echo "    Gateway:      https://${TUNNEL_HOST}/"
+        echo "    Gateway:      https://${TUNNEL_HOST}/?token=${OPENCLAW_GATEWAY_TOKEN}"
+        echo "    Dozzle Logs:  http://127.0.0.1:${DOZZLE_PORT:-5005}/"
         ;;
     tailscale)
         BASE="${TS_FQDN:-${TS_HOSTNAME:-openclaw}.<your-tailnet>.ts.net}"
         echo "  Access URLs:"
-        echo "    Gateway:      https://${BASE}/"
+        echo "    Gateway:      https://${BASE}/?token=${OPENCLAW_GATEWAY_TOKEN}"
         [ -n "${TS_IP:-}" ] && echo "    Tailscale IP: ${TS_IP}"
+        echo "    Dozzle Logs:  http://127.0.0.1:${DOZZLE_PORT:-5005}/"
         ;;
 esac
 echo "  Telemetry: ${TELEMETRY_ENABLED}"
