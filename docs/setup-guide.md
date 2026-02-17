@@ -47,15 +47,11 @@
                                        │
          ┌─────────────────────────────┼───────────────┐
          │  openclaw-internal (no internet)            │
-         │  ┌────────────┐  ┌────────────┐             │
-         │  │   litellm   │  │            │             │
-         │  │ (LLM router)│  │            │             │
-         │  └──────┬──────┘  │            │             │
-         │    ┌────┴────┐    │            │             │
-         │  ┌─▼──────────┐  ┌▼───────────┐             │
-         │  │ llama-embed │  │ llama-chat │             │
-         │  │ (embeddings)│  │ (light LLM)│             │
-         │  └────────────┘  └────────────┘             │
+         │  ┌────────────────────────────────────┐     │
+         │  │   litellm (LLM router/proxy)       │     │
+         │  │   routes to Ollama on host via      │     │
+         │  │   host.docker.internal:11434        │     │
+         │  └────────────────────────────────────┘     │
          └─────────────────────────────────────────────┘
 ```
 
@@ -295,7 +291,7 @@ docker inspect --format='{{index .RepoDigests 0}}' alpine/openclaw:latest
 image: alpine/openclaw@sha256:abc123def456...
 ```
 
-Do this for every image: `cloudflare/cloudflared`, `ghcr.io/ggml-org/llama.cpp:server`, `alpine:3.20`.
+Do this for every image: `cloudflare/cloudflared`, `alpine:3.20`.
 
 ### 2. Scan images with Trivy before deployment
 
@@ -305,7 +301,6 @@ brew install trivy
 
 # Scan for HIGH and CRITICAL vulnerabilities
 trivy image --severity HIGH,CRITICAL alpine/openclaw:latest
-trivy image --severity HIGH,CRITICAL ghcr.io/ggml-org/llama.cpp:server
 trivy image --severity HIGH,CRITICAL cloudflare/cloudflared:latest
 
 # Fail on any critical
@@ -335,7 +330,6 @@ brew install syft
 
 # Generate SBOM for each image
 syft alpine/openclaw:latest -o spdx-json > sbom-openclaw.json
-syft ghcr.io/ggml-org/llama.cpp:server -o spdx-json > sbom-llama.json
 ```
 
 Keep these in version control. If a new CVE drops, you can immediately check if you're affected without pulling images.
@@ -487,31 +481,42 @@ docker compose run --rm --profile cli openclaw-cli pairing approve whatsapp <COD
 
 ## LiteLLM Proxy (LLM Router)
 
-All local LLM traffic flows through a LiteLLM proxy container (`opendeclawed-litellm`), which presents a single OpenAI-compatible `/v1` endpoint to OpenClaw. By default it routes to the containerized llama.cpp backends, but you can swap or add backends by editing `litellm_config.yaml` — no `openclaw.json` changes needed.
+All local LLM traffic flows through a LiteLLM proxy container (`opendeclawed-litellm`), which presents a single OpenAI-compatible `/v1` endpoint to OpenClaw. By default it routes to Ollama running on the host, but you can swap or add backends by editing `litellm_config.yaml` — no `openclaw.json` changes needed.
 
 LiteLLM logs every request to stdout, which means all LLM call logs are visible in Dozzle alongside the rest of the stack.
 
 ### Swapping to a different backend
 
-Edit `litellm_config.yaml` and change the `api_base` URLs. For example, to use MLX servers running natively on your Mac:
+Edit `litellm_config.yaml` and change the `api_base` URLs. The default config points to Ollama on the host:
 
 ```yaml
 model_list:
+  # Anthropic models (ANTHROPIC_API_KEY from env)
+  - model_name: claude
+    litellm_params:
+      model: anthropic/claude-sonnet-4-5-20250929
+      drop_params: true
+  - model_name: haiku
+    litellm_params:
+      model: anthropic/claude-haiku-4-5-20251001
+      drop_params: true
+
+  # Local models (Ollama on host)
   - model_name: local-chat
     litellm_params:
-      model: openai/local-chat
-      api_base: "http://host.docker.internal:8091/v1"
+      model: openai/qwen3:8b
+      api_base: "http://host.docker.internal:11434/v1"
       api_key: "not-needed"
   - model_name: local-embed
     litellm_params:
-      model: openai/local-embed
-      api_base: "http://host.docker.internal:8090/v1"
+      model: openai/nomic-embed-text
+      api_base: "http://host.docker.internal:11434/v1"
       api_key: "not-needed"
 ```
 
 Then restart: `docker compose restart litellm`
 
-`host.docker.internal` resolves to your Mac's IP from inside Docker containers. This works for MLX (`mlx_lm.server`), Ollama, LM Studio, vLLM, or any OpenAI-compatible endpoint.
+`host.docker.internal` resolves to your Mac's IP from inside Docker containers. This works for Ollama, MLX (`mlx_lm.server`), LM Studio, vLLM, or any OpenAI-compatible endpoint.
 
 ---
 
@@ -742,4 +747,4 @@ docker compose down -v
 2. **Tunnel won't connect**: Check `docker compose logs cloudflared` — token may be expired
 3. **WhatsApp disconnected**: Re-scan QR code via `docker compose logs -f openclaw-gateway`
 4. **Firewall rules missing**: The persistent sidecar re-checks every 60 seconds, so rules self-heal. If needed: `docker compose restart egress-firewall`
-5. **Models not loading**: Check `docker volume inspect llama-models` — re-run the model copy step from setup.sh
+5. **LLM not responding**: Verify Ollama is running on the host (`ollama list`) and that `host.docker.internal:11434` is reachable from the LiteLLM container

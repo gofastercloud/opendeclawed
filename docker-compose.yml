@@ -24,19 +24,14 @@
 #  +-----------------------------v---------------------------------------+
 #  |                       opendeclawed-litellm                          |
 #  |  OpenAI-compatible proxy -- single /v1 endpoint for all backends    |
-#  |  Routes chat -> llama-chat / MLX / Ollama / cloud                   |
-#  |  Routes embed -> llama-embed / MLX / any embedding endpoint         |
+#  |  Routes chat + embed -> Ollama / external backends                  |
 #  |  Internal-only network, all LLM call logs visible in Dozzle         |
 #  +-----------------------------+---------------------------------------+
 #                                |
-#       +------------------------+------------------------+
-#       |                                                 |
-#  +----v-------------------+               +-------------v---+
-#  |   llama-embed          |               |   llama-chat    |
-#  | (embedding model)      |               | (chat model)    |
-#  | Internal-only network  |               | Internal-only   |
-#  | cap: drop ALL          |               | cap: drop ALL   |
-#  +------------------------+               +-----------------+
+#                  +-------------v-----------------+
+#                  |  Ollama / external backends    |
+#                  |  (host network or remote API)  |
+#                  +-------------------------------+
 #
 #  +---------------------------------------------------------------------+
 #  |                       EGRESS FIREWALL (Init)                         |
@@ -224,127 +219,20 @@ services:
         max-file: "3"
 
   # -------------------------------------------------------------------
-  # LLAMA-EMBED: Embedding model server (internal network only)
-  # -------------------------------------------------------------------
-  # Runs llama.cpp embedding server. Isolated to internal network
-  # (no internet access). Provides EMBED_PORT:${EMBED_PORT:-8090} for
-  # openclaw-gateway to call.
-  #
-  # Security posture:
-  #  - Network: openclaw-internal only (no internet)
-  #  - Filesystem: read-only + minimal tmpfs for inference cache
-  #  - Privileges: user 65534:65534 (nobody:nogroup), no_new_privileges
-  #  - Capabilities: ALL dropped (no special kernel access)
-  #  - IPC: private (no shared memory)
-  #  - PID: private (isolated process namespace)
-  llama-embed:
-    <<: *hardened-defaults
-    image: "${LLAMA_IMAGE:-ghcr.io/ggml-org/llama.cpp:server}"
-    # The official server image is amd64-only (arm64 CI broken since Apr 2025).
-    # OrbStack uses Rosetta 2 for transparent emulation on Apple Silicon.
-    platform: "${LLAMA_PLATFORM:-linux/amd64}"
-    container_name: opendeclawed-llama-embed
-    profiles: [llama]
-    command: >-
-      --model /llama-models/${EMBED_MODEL_FILE:-nomic-embed-text-v1.5.f16.gguf}
-      --host 0.0.0.0
-      --threads ${LLAMA_THREADS:-4}
-      --ctx-size ${EMBED_CTX:-2048}
-      --port ${EMBED_PORT:-8090}
-      --embeddings
-    networks:
-      openclaw-internal: {}
-    volumes:
-      - llama-models:/llama-models:ro
-    tmpfs:
-      - /tmp:size=1g,noexec,nosuid,nodev
-      - /run:size=256m,noexec,nosuid,nodev
-    environment:
-      - OMP_NUM_THREADS=${LLAMA_THREADS:-4}
-    deploy:
-      resources:
-        limits:
-          cpus: "${LLAMA_EMBED_CPUS:-2}"
-          memory: "${LLAMA_EMBED_MEM:-2g}"
-          pids: 256
-        reservations:
-          cpus: "${LLAMA_EMBED_CPUS_RESERVE:-1}"
-          memory: "${LLAMA_EMBED_MEM_RESERVE:-1g}"
-    read_only: true
-    user: "65534:65534"
-    healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://127.0.0.1:${EMBED_PORT:-8090}/health || wget -qO- http://127.0.0.1:${EMBED_PORT:-8090}/health"]
-      interval: 15s
-      timeout: 5s
-      retries: 5
-      start_period: 60s
-    depends_on:
-      egress-firewall:
-        condition: service_healthy
-
-  # -------------------------------------------------------------------
-  # LLAMA-CHAT: Chat model server (internal network only)
-  # -------------------------------------------------------------------
-  # Runs llama.cpp chat completion server. Isolated to internal network.
-  # Provides CHAT_PORT:${CHAT_PORT:-8091} for openclaw-gateway.
-  #
-  # Security: Same as llama-embed (see above).
-  llama-chat:
-    <<: *hardened-defaults
-    image: "${LLAMA_IMAGE:-ghcr.io/ggml-org/llama.cpp:server}"
-    platform: "${LLAMA_PLATFORM:-linux/amd64}"
-    container_name: opendeclawed-llama-chat
-    profiles: [llama]
-    command: >-
-      --model /llama-models/${CHAT_MODEL_FILE:-mistral-7b-instruct-v0.2.Q6_K.gguf}
-      --host 0.0.0.0
-      --threads ${LLAMA_THREADS:-4}
-      --ctx-size ${CHAT_CTX:-32768}
-      --port ${CHAT_PORT:-8091}
-      --n-gpu-layers ${LLAMA_GPU_LAYERS:-0}
-    networks:
-      openclaw-internal: {}
-    volumes:
-      - llama-models:/llama-models:ro
-    tmpfs:
-      - /tmp:size=2g,noexec,nosuid,nodev
-      - /run:size=256m,noexec,nosuid,nodev
-    environment:
-      - OMP_NUM_THREADS=${LLAMA_THREADS:-4}
-    deploy:
-      resources:
-        limits:
-          cpus: "${LLAMA_CHAT_CPUS:-3}"
-          memory: "${LLAMA_CHAT_MEM:-4g}"
-          pids: 256
-        reservations:
-          cpus: "${LLAMA_CHAT_CPUS_RESERVE:-2}"
-          memory: "${LLAMA_CHAT_MEM_RESERVE:-2g}"
-    read_only: true
-    user: "65534:65534"
-    healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://127.0.0.1:${CHAT_PORT:-8091}/health || wget -qO- http://127.0.0.1:${CHAT_PORT:-8091}/health"]
-      interval: 15s
-      timeout: 5s
-      retries: 5
-      start_period: 60s
-    depends_on:
-      egress-firewall:
-        condition: service_healthy
-
-  # -------------------------------------------------------------------
   # LITELLM: OpenAI-compatible LLM proxy/router
   # -------------------------------------------------------------------
   # Presents a single /v1/chat/completions and /v1/embeddings endpoint
-  # to OpenClaw, abstracting the actual backend (llama.cpp containers,
-  # MLX on host, Ollama, vLLM, etc.). Backend routing is defined in
+  # to OpenClaw, abstracting the actual backend (Ollama, MLX, vLLM,
+  # cloud APIs, etc.). Backend routing is defined in
   # litellm_config.yaml -- swap backends without changing openclaw.json.
   #
   # Profile: always-on (core infrastructure)
   #
   # Security:
-  #  - Internal network only (no internet access)
+  #  - Internal + egress networks (egress needed to reach Anthropic API)
+  #  - DNS via blocky (threat filtering + DoH privacy)
   #  - read-only root, all caps dropped, no_new_privileges
+  #  - ANTHROPIC_API_KEY isolated here — never passed to gateway
   #  - Master key must be set via environment (fails fast if missing)
   #  - No database (stateless proxy -- logs to stdout for Dozzle)
   litellm:
@@ -354,9 +242,13 @@ services:
     command: ["--config", "/app/config.yaml", "--port", "${LITELLM_PORT:-4000}"]
     networks:
       openclaw-internal: {}
+      openclaw-egress: {}
+    dns:
+      - "${BLOCKY_IP:-172.27.0.53}"
     volumes:
       - ${LITELLM_CONFIG:-./litellm_config.yaml}:/app/config.yaml:ro
     environment:
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:?ANTHROPIC_API_KEY must be set - run setup.sh}
       - LITELLM_MASTER_KEY=${LITELLM_MASTER_KEY:?LITELLM_MASTER_KEY must be set - run setup.sh}
       - LITELLM_LOG_LEVEL=${LOG_LEVEL:-info}
     deploy:
@@ -508,6 +400,9 @@ services:
         mkdir -p /etc/cloudflared
         cat > /etc/cloudflared/config.yml << CFGEOF
       ingress:
+        - hostname: "${CLOUDFLARE_TUNNEL_ROUTE:-openclaw.example.com}"
+          path: "/dozzle.*"
+          service: "http://dozzle:${DOZZLE_PORT:-5005}"
         - hostname: "${CLOUDFLARE_TUNNEL_ROUTE:-openclaw.example.com}"
           service: "http://openclaw-gateway:${GATEWAY_PORT:-18789}"
         - service: http_status:404
@@ -834,6 +729,7 @@ services:
       - DOZZLE_LEVEL=info
       - DOZZLE_FILTER=name=opendeclawed-*
       - DOZZLE_NO_ANALYTICS=true
+      - DOZZLE_BASE=/dozzle
     # NOTE: dns directive omitted -- Dozzle needs Docker's embedded DNS (127.0.0.11)
     # to resolve docker-socket-proxy. Blocky DNS would break service discovery.
     tmpfs:
@@ -923,7 +819,7 @@ networks:
   # -------------------------------------------------------------------
   # OPENCLAW-INTERNAL: LLM service mesh (no internet access)
   # -------------------------------------------------------------------
-  # Bridge network for litellm, llama-embed, llama-chat, and openclaw-gateway
+  # Bridge network for litellm and openclaw-gateway
   # to communicate. Marked internal: true so containers cannot reach the host
   # or internet directly. Subject to egress firewall rules (allows
   # inter-container within 172.27.0.0/16).
@@ -980,24 +876,3 @@ volumes:
   #   ~/.openclaw/openclaw.json -> 600
   #   ~/.openclaw/workspace/  -> 700
 
-  # -------------------------------------------------------------------
-  # LLAMA-MODELS: Shared model cache (read-only for services)
-  # -------------------------------------------------------------------
-  # GGUF quantized model files for llama-embed and llama-chat.
-  # Bind-mounted from host at startup. Models must be placed in
-  # LLAMA_MODELS_PATH on the host before docker-compose up.
-  #
-  # Models needed:
-  #  - ${EMBED_MODEL_FILE:-nomic-embed-text-v1.5.f16.gguf} (embedding)
-  #  - ${CHAT_MODEL_FILE:-mistral-7b-instruct-v0.2.Q6_K.gguf} (chat)
-  #
-  # Setup:
-  #  mkdir -p ${LLAMA_MODELS_PATH:-./models}
-  #  # Download models here
-  #  docker-compose up -d
-  llama-models:
-    driver: local
-    driver_opts:
-      type: none
-      o: bind
-      device: "${LLAMA_MODELS_PATH:-./models}"

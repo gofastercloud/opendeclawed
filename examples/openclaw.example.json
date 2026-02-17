@@ -9,9 +9,7 @@
     "lastRunCommand": "onboard",
     "lastRunMode": "local"
   },
-  "env": {
-    "ANTHROPIC_API_KEY": "sk-ant-REPLACE_ME"
-  },
+  "env": {},
   "models": {
     "providers": {
       "litellm": {
@@ -20,13 +18,25 @@
         "api": "openai-completions",
         "models": [
           {
-            "id": "local/local-chat",
+            "id": "litellm/claude",
+            "name": "Claude Sonnet (via LiteLLM)",
+            "contextWindow": 200000,
+            "maxTokens": 8192
+          },
+          {
+            "id": "litellm/haiku",
+            "name": "Claude Haiku (via LiteLLM)",
+            "contextWindow": 200000,
+            "maxTokens": 8192
+          },
+          {
+            "id": "litellm/local-chat",
             "name": "Local Chat (via LiteLLM)",
             "contextWindow": 4096,
             "maxTokens": 2048
           },
           {
-            "id": "local/local-embed",
+            "id": "litellm/local-embed",
             "name": "Local Embed (via LiteLLM)",
             "contextWindow": 8192,
             "maxTokens": 512
@@ -38,15 +48,14 @@
   "agents": {
     "defaults": {
       "model": {
-        "primary": "anthropic/claude-sonnet-4-5-20250929",
+        "primary": "litellm/claude",
         "fallbacks": [
-          "anthropic/claude-haiku-4-5-20251001"
+          "litellm/haiku"
         ]
       },
       "models": {
-        "anthropic/claude-sonnet-4-5-20250929": { "alias": "Sonnet" },
-        "anthropic/claude-haiku-4-5-20251001":  { "alias": "Haiku" },
-        "anthropic/claude-opus-4-6":            { "alias": "Opus" }
+        "litellm/claude": { "alias": "Sonnet" },
+        "litellm/haiku":  { "alias": "Haiku" }
       },
       "workspace": "/home/node/.openclaw/workspace",
       "heartbeat": {

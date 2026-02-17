@@ -32,13 +32,7 @@ CONFIG_DIR="${OPENCLAW_CONFIG_DIR:-${HOME}/.openclaw}"
 WORKSPACE_DIR="${OPENCLAW_WORKSPACE_DIR:-${CONFIG_DIR}/workspace}"
 COMPOSE_FILE="${REPO_DIR}/docker-compose.yml"
 ENV_FILE="${REPO_DIR}/.env"
-MODELS_DIR="${REPO_DIR}/models"
 INTERACTIVE=true
-
-EMBED_MODEL="${EMBED_MODEL_FILE:-nomic-embed-text-v1.5.f16.gguf}"
-EMBED_URL="https://huggingface.co/nomic-ai/nomic-embed-text-v1.5-GGUF/resolve/main/nomic-embed-text-v1.5.f16.gguf"
-CHAT_MODEL="${CHAT_MODEL_FILE:-mistral-7b-instruct-v0.2.Q6_K.gguf}"
-CHAT_URL="https://huggingface.co/TheBloke/Mistral-7B-Instruct-v0.2-GGUF/resolve/main/${CHAT_MODEL}"
 
 # Credential vars — populated by prompts or environment
 ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:-}"
@@ -260,7 +254,7 @@ ask_plain() {
 }
 
 ###############################################################################
-header "Step 1/11 — Prerequisites"
+header "Step 1/9 — Prerequisites"
 ###############################################################################
 
 command -v docker >/dev/null 2>&1 || error "Docker not found. Install OrbStack (https://orbstack.dev) or Docker Desktop."
@@ -281,7 +275,7 @@ else
 fi
 
 ###############################################################################
-header "Step 2/11 — Secrets detection (TruffleHog)"
+header "Step 2/9 — Secrets detection (TruffleHog)"
 ###############################################################################
 
 # Install trufflehog if missing
@@ -335,7 +329,7 @@ else
 fi
 
 ###############################################################################
-header "Step 3/11 — Config directories + .env"
+header "Step 3/9 — Config directories + .env"
 ###############################################################################
 
 mkdir -p "${CONFIG_DIR}" "${WORKSPACE_DIR}"
@@ -396,7 +390,7 @@ except: pass
 fi
 
 ###############################################################################
-header "Step 4/11 — Credentials"
+header "Step 4/9 — Credentials"
 ###############################################################################
 
 echo ""
@@ -493,7 +487,7 @@ fi
 info "All credentials collected + persisted."
 
 ###############################################################################
-header "Step 5/11 — Gateway token"
+header "Step 5/9 — Gateway token"
 ###############################################################################
 
 if [ -f "${CONFIG_DIR}/.gateway-token" ]; then
@@ -523,14 +517,10 @@ save_env LITELLM_MASTER_KEY "${LITELLM_MASTER_KEY}"
 # Also persist non-secret config to .env
 save_env OPENCLAW_CONFIG_DIR "${CONFIG_DIR}"
 save_env OPENCLAW_WORKSPACE_DIR "${WORKSPACE_DIR}"
-save_env EMBED_MODEL_FILE "${EMBED_MODEL}"
-save_env CHAT_MODEL_FILE "${CHAT_MODEL}"
 save_env INTERNAL_SUBNET "${INTERNAL_SUBNET:-172.27.0.0/24}"
 save_env EGRESS_SUBNET "${EGRESS_SUBNET:-172.28.0.0/24}"
 save_env GATEWAY_IP "${GATEWAY_IP:-172.17.0.1}"
 save_env INGRESS_MODE "${INGRESS_MODE}"
-save_env LLAMA_IMAGE "${LLAMA_IMAGE:-ghcr.io/ggml-org/llama.cpp:server}"
-
 # Write empty defaults for optional profile vars so Docker Compose
 # doesn't emit "variable is not set" warnings for unused profiles.
 [ -z "${CLOUDFLARE_TOKEN}" ]    && save_env CLOUDFLARE_TOKEN ""
@@ -538,102 +528,27 @@ save_env LLAMA_IMAGE "${LLAMA_IMAGE:-ghcr.io/ggml-org/llama.cpp:server}"
 [ -z "${TS_HOSTNAME}" ]         && save_env TS_HOSTNAME "openclaw"
 
 ###############################################################################
-header "Step 6/11 — Download local models"
-###############################################################################
-
-mkdir -p "${MODELS_DIR}"
-
-# Known-good SHA256 checksums for default models.
-# Update these when changing default models in the vars above.
-# Uses a function instead of associative arrays for bash 3.2 (macOS) compatibility.
-get_model_checksum() {
-    case "$1" in
-        nomic-embed-text-v1.5.f16.gguf)      echo "" ;; # TODO: update after first download
-        mistral-7b-instruct-v0.2.Q6_K.gguf) echo "" ;; # TODO: update after first download
-        *)                                    echo "" ;;
-    esac
-}
-
-# Cross-platform SHA256 (macOS has shasum, Linux has sha256sum)
-compute_sha256() {
-    if command -v sha256sum >/dev/null 2>&1; then
-        sha256sum "$1" | cut -d' ' -f1
-    elif command -v shasum >/dev/null 2>&1; then
-        shasum -a 256 "$1" | cut -d' ' -f1
-    else
-        warn "No sha256sum or shasum found — skipping checksum"
-        echo ""
-    fi
-}
-
-download_model() {
-    local name="$1" url="$2" dest="${MODELS_DIR}/$1"
-    if [ -f "${dest}" ]; then
-        info "Cached: ${name}"
-    else
-        info "Downloading ${name}..."
-        curl -L --progress-bar -o "${dest}" "${url}" || error "Failed to download ${name}"
-        info "Downloaded: ${name}"
-    fi
-}
-
-verify_model() {
-    local name="$1" dest="${MODELS_DIR}/$1"
-    local expected
-    expected="$(get_model_checksum "${name}")"
-
-    if [ -z "${expected}" ] || [ "${expected}" = "PLACEHOLDER_UPDATE_AFTER_FIRST_DOWNLOAD" ]; then
-        local actual
-        actual="$(compute_sha256 "${dest}")"
-        if [ -n "${actual}" ]; then
-            warn "No checksum on record for ${name}"
-            warn "  Computed: ${actual}"
-            warn "  Update get_model_checksum() in setup.sh with this value after verifying the file."
-        fi
-        return 0
-    fi
-
-    info "Verifying integrity: ${name}..."
-    local actual
-    actual="$(compute_sha256 "${dest}")"
-    if [ -z "${actual}" ]; then
-        warn "Cannot verify ${name} — no checksum tool available"
-        return 0
-    fi
-    if [ "${actual}" = "${expected}" ]; then
-        info "Checksum OK: ${name}"
-    else
-        error "CHECKSUM MISMATCH for ${name}!\n  Expected: ${expected}\n  Got:      ${actual}\n  The model file may be corrupted or tampered with. Delete it and re-run."
-    fi
-}
-
-download_model "${EMBED_MODEL}" "${EMBED_URL}"
-download_model "${CHAT_MODEL}" "${CHAT_URL}"
-verify_model "${EMBED_MODEL}"
-verify_model "${CHAT_MODEL}"
-
-###############################################################################
-header "Step 7/11 — Write openclaw.json"
+header "Step 6/9 — Write openclaw.json"
 ###############################################################################
 
 OPENCLAW_JSON="${CONFIG_DIR}/openclaw.json"
 
 if [ -f "${OPENCLAW_JSON}" ]; then
-    info "Config exists, not overwriting: ${OPENCLAW_JSON}"
-    info "Delete it and re-run to regenerate."
-else
-    # SECURITY: Pass all secrets via environment variables to Python, NOT via
-    # shell interpolation into code. Shell interpolation breaks on quotes,
-    # backslashes, and $ chars in API keys, and is an injection vector.
-    ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY}" \
-    TELEGRAM_BOT_TOKEN="${TELEGRAM_BOT_TOKEN}" \
-    INGRESS_MODE="${INGRESS_MODE}" \
-    LITELLM_PORT="${LITELLM_PORT:-4000}" \
-    LITELLM_MASTER_KEY="${LITELLM_MASTER_KEY}" \
-    OPENCLAW_JSON_PATH="${OPENCLAW_JSON}" \
-    OPENCLAW_GATEWAY_TOKEN="${OPENCLAW_GATEWAY_TOKEN}" \
-    TS_HOSTNAME="${TS_HOSTNAME:-openclaw}" \
-    python3 << 'PYEOF'
+    info "Removing existing config (will regenerate from .env): ${OPENCLAW_JSON}"
+    rm -f "${OPENCLAW_JSON}"
+fi
+
+# SECURITY: Pass all secrets via environment variables to Python, NOT via
+# shell interpolation into code. Shell interpolation breaks on quotes,
+# backslashes, and $ chars in API keys, and is an injection vector.
+TELEGRAM_BOT_TOKEN="${TELEGRAM_BOT_TOKEN}" \
+INGRESS_MODE="${INGRESS_MODE}" \
+LITELLM_PORT="${LITELLM_PORT:-4000}" \
+LITELLM_MASTER_KEY="${LITELLM_MASTER_KEY}" \
+OPENCLAW_JSON_PATH="${OPENCLAW_JSON}" \
+OPENCLAW_GATEWAY_TOKEN="${OPENCLAW_GATEWAY_TOKEN}" \
+TS_HOSTNAME="${TS_HOSTNAME:-openclaw}" \
+python3 << 'PYEOF'
 import json, os, secrets
 from datetime import datetime, timezone
 
@@ -666,8 +581,24 @@ config = {
                 "api": "openai-responses",
                 "models": [
                     {
-                        "id": "local/local-chat",
-                        "name": "Local Chat (Llama 3.2 3B via LiteLLM)",
+                        "id": "litellm/claude",
+                        "name": "Claude Sonnet (via LiteLLM)",
+                        "reasoning": True,
+                        "input": ["text"],
+                        "contextWindow": 200000,
+                        "maxTokens": 8192
+                    },
+                    {
+                        "id": "litellm/haiku",
+                        "name": "Claude Haiku (via LiteLLM)",
+                        "reasoning": False,
+                        "input": ["text"],
+                        "contextWindow": 200000,
+                        "maxTokens": 8192
+                    },
+                    {
+                        "id": "litellm/local-chat",
+                        "name": "Local Chat (via LiteLLM)",
                         "reasoning": False,
                         "input": ["text"],
                         "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
@@ -675,7 +606,7 @@ config = {
                         "maxTokens": 2048
                     },
                     {
-                        "id": "local/local-embed",
+                        "id": "litellm/local-embed",
                         "name": "Local Embed (Nomic v1.5 via LiteLLM)",
                         "reasoning": False,
                         "input": ["text"],
@@ -690,20 +621,19 @@ config = {
     "agents": {
         "defaults": {
             "model": {
-                "primary": "anthropic/claude-sonnet-4-5-20250929",
+                "primary": "litellm/claude",
                 "fallbacks": [
-                    "anthropic/claude-haiku-4-5-20251001"
+                    "litellm/haiku"
                 ]
             },
             "models": {
-                "anthropic/claude-sonnet-4-5-20250929": {"alias": "Sonnet"},
-                "anthropic/claude-haiku-4-5-20251001":  {"alias": "Haiku"},
-                "anthropic/claude-opus-4-6":            {"alias": "Opus"}
+                "litellm/claude": {"alias": "Sonnet"},
+                "litellm/haiku":  {"alias": "Haiku"}
             },
             "workspace": "/home/node/.openclaw/workspace",
             "heartbeat": {
                 "every": "60m",
-                "model": "anthropic/claude-haiku-4-5-20251001",
+                "model": "litellm/haiku",
                 "target": "last",
                 "includeReasoning": False,
                 "ackMaxChars": 300
@@ -738,11 +668,6 @@ config = {
     }
 }
 
-# Inject Anthropic API key
-api_key = os.environ.get("ANTHROPIC_API_KEY", "")
-if api_key:
-    config["env"]["ANTHROPIC_API_KEY"] = api_key
-
 # Inject channel configs with secure defaults
 telegram_token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 
@@ -771,12 +696,11 @@ with open(out_path, "w") as f:
     json.dump(config, f, indent=2)
 PYEOF
 
-    chmod 600 "${OPENCLAW_JSON}"
-    info "Written: ${OPENCLAW_JSON} (mode 600)"
-fi
+chmod 600 "${OPENCLAW_JSON}"
+info "Written: ${OPENCLAW_JSON} (mode 600)"
 
 ###############################################################################
-header "Step 8/11 — Verify .env"
+header "Step 7/9 — Verify .env"
 ###############################################################################
 
 # .env has been built incrementally by save_env calls above.
@@ -788,18 +712,6 @@ if [ -f "${ENV_FILE}" ]; then
 else
     warn ".env missing — this shouldn't happen. Re-run setup."
 fi
-
-###############################################################################
-header "Step 9/11 — Load models into Docker volume"
-###############################################################################
-
-info "Loading models into Docker volume..."
-docker volume create llama-models 2>/dev/null || true
-docker run --rm \
-    -v "${MODELS_DIR}:/src:ro" \
-    -v llama-models:/dst \
-    alpine sh -c "cp /src/*.gguf /dst/ 2>/dev/null || true"
-info "Models loaded."
 
 # ── Check for OpenClaw image ──
 OPENCLAW_IMAGE="${OPENCLAW_IMAGE:-openclaw:local}"
@@ -841,7 +753,7 @@ if ! docker image inspect "${OPENCLAW_IMAGE}" >/dev/null 2>&1; then
 fi
 
 ###############################################################################
-header "Step 10/11 — Start stack"
+header "Step 8/9 — Start stack"
 ###############################################################################
 
 # Onboarding — config is pre-populated, wizard should not be needed.
@@ -865,10 +777,7 @@ fi
 # Build profile flags
 PROFILES=()
 
-# LLM backend: containerized llama.cpp via LiteLLM proxy
-# To use an external backend (MLX, Ollama, vLLM), edit litellm_config.yaml
-# after setup to point at your host server (e.g. host.docker.internal:8091).
-PROFILES+=(--profile llama)
+# LLM backend: Ollama on host via LiteLLM proxy
 
 # ── Generate litellm_config.yaml (LLM router config) ──────────────────
 # LiteLLM sits between OpenClaw and the actual LLM backends. All local
@@ -877,39 +786,45 @@ PROFILES+=(--profile llama)
 LITELLM_CONFIG="${REPO_DIR}/litellm_config.yaml"
 LITELLM_PORT="${LITELLM_PORT:-4000}"
 
-cat > "${LITELLM_CONFIG}" << LITELLMEOF
+cat > "${LITELLM_CONFIG}" << 'LITELLMEOF'
 # LiteLLM Proxy configuration — generated by setup.sh
 # Edit this file to add/change LLM backends without modifying openclaw.json.
 #
-# To use MLX (Apple Silicon), Ollama, or another backend instead of llama.cpp:
-#   1. Change the api_base URLs below to point at your server
-#      e.g. http://host.docker.internal:8091/v1 for a host-native server
-#   2. Restart: docker compose restart litellm
-#
-# To add a second backend for failover, duplicate the model entry with a
-# different api_base. LiteLLM will load-balance automatically.
+# Anthropic models: ANTHROPIC_API_KEY is read from env (docker-compose.yml).
+# Local models: route to Ollama running on the host (localhost:11434).
+# To use MLX, vLLM, or another backend, change the api_base URLs below.
+# Restart after editing: docker compose restart litellm
 #
 # Docs: https://docs.litellm.ai/docs/proxy/configs
 
 model_list:
-  # ── Chat / completion model (llama.cpp container) ──
+  # ── Anthropic models (API key from env) ──
+  - model_name: claude
+    litellm_params:
+      model: anthropic/claude-sonnet-4-5-20250929
+      drop_params: true
+  - model_name: haiku
+    litellm_params:
+      model: anthropic/claude-haiku-4-5-20251001
+      drop_params: true
+
+  # ── Chat / completion model (Ollama on host) ──
   - model_name: local-chat
     litellm_params:
-      model: openai/local-chat
-      api_base: "http://llama-chat:${CHAT_PORT:-8091}/v1"
+      model: openai/qwen3:8b
+      api_base: "http://host.docker.internal:11434/v1"
       api_key: "not-needed"
 
-  # ── Embedding model (llama.cpp container) ──
+  # ── Embedding model (Ollama on host) ──
   - model_name: local-embed
     litellm_params:
-      model: openai/local-embed
-      api_base: "http://llama-embed:${EMBED_PORT:-8090}/v1"
+      model: openai/nomic-embed-text
+      api_base: "http://host.docker.internal:11434/v1"
       api_key: "not-needed"
-      # llama.cpp rejects null encoding_format — force "float" to avoid 500s
-      encoding_format: "float"
 
 # master_key is set via LITELLM_MASTER_KEY env var (docker-compose.yml).
-# Do NOT set it in general_settings — LiteLLM doesn't expand \${} in YAML.
+# ANTHROPIC_API_KEY is set via env var (docker-compose.yml).
+# Do NOT set keys in general_settings — LiteLLM doesn't expand ${} in YAML.
 LITELLMEOF
 
 info "Written: ${LITELLM_CONFIG}"
@@ -952,7 +867,7 @@ info "Starting stack..."
 docker compose -f "${COMPOSE_FILE}" --env-file "${ENV_FILE}" "${PROFILES[@]}" up -d
 
 ###############################################################################
-header "Step 11/11 — Validate"
+header "Step 9/9 — Validate"
 ###############################################################################
 
 sleep 3
@@ -1169,7 +1084,7 @@ echo -e "  ${BOLD}${GREEN}Setup complete.${NC}"
 echo "======================================================================"
 echo ""
 echo "  Credentials stored:"
-echo "    Anthropic API key:  ~/.openclaw/openclaw.json + .env"
+echo "    Anthropic API key:  .env (used by LiteLLM container only)"
 [ -n "${VIRUSTOTAL_API_KEY}" ] && \
 echo "    VirusTotal API key: .env"
 [ -n "${CLOUDFLARE_TOKEN}" ] && \

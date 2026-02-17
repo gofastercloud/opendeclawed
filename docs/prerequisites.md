@@ -17,9 +17,9 @@ docker --version        # 20.10+
 docker compose version  # 2.0+
 ```
 
-**RAM**: 8GB minimum (CPU-only), 16GB+ recommended. The llama.cpp containers alone want ~6GB for default models.
+**RAM**: 4GB minimum for the Docker stack. LLM inference is handled by Ollama on the host (install separately via https://ollama.com).
 
-**Disk**: ~12GB free — models (~6GB), container images (~3GB), runtime volumes (~1GB), headroom.
+**Disk**: ~4GB free — container images (~3GB), runtime volumes (~1GB).
 
 **Kernel**: Linux with iptables support and the DOCKER-USER chain. OrbStack and Docker Desktop both provide this. Native Linux works out of the box.
 
@@ -125,31 +125,6 @@ Upstream DNS uses DNS-over-HTTPS (Cloudflare + Quad9) so no plaintext DNS querie
 
 ---
 
-## GGUF Model Files
-
-The llama.cpp containers need quantized model files. Download before first run:
-
-```bash
-mkdir -p models
-
-# Embedding model (~500MB)
-wget -O models/nomic-embed-text-v1.5.f16.gguf \
-  "https://huggingface.co/nomic-ai/nomic-embed-text-v1.5-GGUF/resolve/main/nomic-embed-text-v1.5.f16.gguf"
-
-# Chat model (~5.8GB) — pick one:
-# Mistral 7B (good general-purpose)
-wget -O models/mistral-7b-instruct-v0.2.Q6_K.gguf \
-  "https://huggingface.co/TheBloke/Mistral-7B-Instruct-v0.2-GGUF/resolve/main/mistral-7b-instruct-v0.2.Q6_K.gguf"
-```
-
-Verify checksums after download — model files are a supply chain risk:
-
-```bash
-sha256sum models/*.gguf
-# Compare against Hugging Face file page checksums
-```
-
----
 
 ## Storing Secrets Securely
 
@@ -226,11 +201,10 @@ export ANTHROPIC_API_KEY=$(security find-generic-password -s "openclaw" -a "ANTH
 Before running `setup.sh`, confirm:
 
 - [ ] Docker 20.10+ and Compose v2 installed and working
-- [ ] 8GB+ RAM available for containers
-- [ ] ~12GB free disk space
+- [ ] 4GB+ RAM available for Docker containers (Ollama uses additional host RAM)
+- [ ] ~4GB free disk space
 - [ ] Anthropic API key ready (with spend limit set)
 - [ ] VirusTotal API key ready (free tier is fine)
-- [ ] Model files downloaded to `./models/`
 - [ ] Blocky DNS config copied to `~/.openclaw/blocky/config.yml`
 - [ ] Ingress method chosen: local-only, Cloudflare tunnel, or Tailscale
 - [ ] If tunnel: Cloudflare token and domain configured

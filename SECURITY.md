@@ -18,7 +18,7 @@ This document details the security hardening mechanisms in OpenDeclawed. The dep
 
 - **Host**: Untrusted (assumes container breakout is possible)
 - **Network**: Untrusted (assumes network eavesdropping possible)
-- **Models**: Trusted (GGUF files are verified before deployment)
+- **Models**: Trusted (managed by Ollama or external backend)
 - **API Clients**: Partially trusted (can be rate-limited, not authenticated in basic setup)
 
 ### Mitigated Threats
@@ -34,10 +34,10 @@ This document details the security hardening mechanisms in OpenDeclawed. The dep
 | DNS exfiltration / C2 callbacks | blocky DNS firewall with threat blocklists (malware, phishing, cryptomining) + DoH upstream | High |
 | Malicious skill installation | safe-install pipeline: static analysis → VirusTotal → allowlist → local archive install (TOCTOU-safe) | High |
 | Skill archive path traversal | Zip-slip protection: pre-extraction path validation, reject `../` and absolute paths | High |
-| Model file tampering | Read-only mounts, SHA256 checksum verification in setup.sh | High |
+| Model file tampering | Models managed by Ollama or external backend; not mounted into containers | High |
 | Cross-container process snooping | Isolated PID namespaces (no shared `pid:` directives) | High |
 | Shared memory attacks | All containers use `ipc: private` (no shareable IPC) | Medium |
-| Gateway API compromise | Limited egress, DNS-filtered, internal llama network only | Medium |
+| Gateway API compromise | Limited egress, DNS-filtered, internal network only | Medium |
 | Secrets committed to git | TruffleHog pre-commit hook (800+ detectors, entropy analysis) + scan-secrets.sh | High |
 | Cloudflare tunnel token leak | Token in .env (mode 600), not in image | Medium |
 | Tailscale auth key leak | Key in .env (mode 600), reusable keys scoped by tag ACLs | Medium |
@@ -143,8 +143,6 @@ Services run as the least-privileged user their function allows. Most run as **6
 
 | Service | User | Why |
 |---------|------|-----|
-| llama-embed | 65534:65534 | No special file access needed |
-| llama-chat | 65534:65534 | No special file access needed |
 | litellm | 65534:65534 | No special file access needed |
 | cloudflared | 65534:65534 | No special file access needed |
 | blocky | 65534:65534 | No special file access needed |
@@ -177,8 +175,6 @@ Per-service capability grants:
 | Service | Capability | Why |
 |---------|-----------|-----|
 | egress-firewall | NET_ADMIN, NET_RAW | Modify iptables rules |
-| llama-embed | None | No special permissions needed |
-| llama-chat | None | No special permissions needed |
 | litellm | None | No special permissions needed |
 | openclaw-gateway | NET_BIND_SERVICE | Bind to ports <1024 (if configured) |
 | cloudflared | None | No special permissions needed |
@@ -255,8 +251,6 @@ ipc: private       # All services: no shared memory between containers
 
 ```
 openclaw-internal (internal=true, 172.27.0.0/24)
-├── llama-embed        (LLM backend, internal only)
-├── llama-chat         (LLM backend, internal only)
 ├── litellm            (LLM router, internal only)
 ├── openclaw-gateway   (bridges internal + egress)
 ├── blocky             (DNS firewall, pinned to 172.27.0.53)
@@ -285,8 +279,7 @@ docker0 (host bridge)
 ### Why Two Networks?
 
 **openclaw-internal** (internal=true):
-- LLM backends isolated from internet
-- No accidental external calls from embedding/chat models
+- Internal services isolated from internet (LLM backends run externally via Ollama)
 - Gateway can reach both networks (broker model)
 - Enforced at bridge level (no internet route)
 
@@ -317,7 +310,7 @@ iptables -I DOCKER-USER 3 -p tcp --dport 53 -j ACCEPT
 ```
 
 **Why allow DNS?**
-- Containers need to resolve service names (llama-embed, llama-chat)
+- Containers need to resolve service names (litellm, blocky)
 - External APIs need hostname resolution
 - Critical for container operation
 
@@ -492,12 +485,6 @@ logging:
 ## Deployment Security Checklist
 
 Before running in production:
-
-- [ ] **Model Verification**
-  - [ ] Download GGUF files from official sources
-  - [ ] Verify checksums (sha256sum)
-  - [ ] Scan with ClamAV or similar
-  - [ ] Keep models in separate volume (not in git)
 
 - [ ] **Environment Configuration**
   - [ ] Create `.env` from `.env.example`

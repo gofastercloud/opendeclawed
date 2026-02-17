@@ -16,7 +16,6 @@ Production-grade, security-hardened Docker deployment for OpenClaw, an AI agent 
   - All containers: least-privileged user their function allows, cap_drop ALL, read-only rootfs where possible, isolated PID/IPC namespaces
   - Network isolation: internal network (no internet) + egress-controlled network
   - Skills allowlist with safe-install vetting pipeline (static analysis + VirusTotal + TOCTOU protection)
-  - Model file integrity verification (SHA256 checksums)
 
 - **Fully Parameterized**
   - 40+ environment variables with sensible defaults
@@ -25,7 +24,6 @@ Production-grade, security-hardened Docker deployment for OpenClaw, an AI agent 
 
 - **Multiple Deployment Modes**
   - **Local** (default): Gateway on 127.0.0.1:18789
-  - **Llama** (--profile llama): Local LLM inference via llama.cpp (llama-embed + llama-chat)
   - **Tunnel** (--profile tunnel): Cloudflare Tunnel, zero exposed ports
   - **Tailscale** (--profile tailscale): Tailscale mesh VPN, WireGuard-based, ACL-controlled
   - **Monitor** (--profile monitor): Watchtower auto-updates + Dozzle log viewer
@@ -57,13 +55,13 @@ Production-grade, security-hardened Docker deployment for OpenClaw, an AI agent 
 ┌─────────▼──────────────────────────────────────▼────────────────────┐
 │                     litellm (LLM router)                            │
 │  OpenAI-compatible /v1 endpoint, internal-only network              │
-└─────────┬──────────────────┬────────────────────────────────────────┘
-          │                  │
-    ┌─────▼───────┐   ┌─────▼──────┐   ┌─────────────┐
-    │ llama-embed  │   │ llama-chat │   │   blocky    │
-    │ (embeddings) │   │ (chat LLM) │   │(DNS firewall│
-    │ internal-only│   │internal-only│   │ DoH + block)│
-    └──────────────┘   └────────────┘   └─────────────┘
+│  Routes to: Ollama / MLX / vLLM / cloud APIs (external backends)   │
+└────────────────────────────────────────────────────────────────────┘
+                                           ┌─────────────┐
+                                           │   blocky    │
+                                           │(DNS firewall│
+                                           │ DoH + block)│
+                                           └─────────────┘
 
 ┌──────────────────────────────────────────────────────────────────────┐
 │            EGRESS FIREWALL (Persistent Sidecar, 60s loop)           │
@@ -97,13 +95,8 @@ cd opendeclawed
 cp .env.example .env
 # Edit .env with your model filenames, resource limits, etc.
 
-# Download GGUF model files
-mkdir -p models
-# Download embedding model (e.g., nomic-embed-text-v1.5.f16.gguf, ~500MB)
-# Download chat model (e.g., mistral-7b-instruct-v0.2.Q6_K.gguf, ~5.8GB)
-
-# Start containers (local mode with local LLM inference)
-docker-compose --profile llama up -d
+# Start containers (local mode)
+docker-compose up -d
 
 # Check status
 docker-compose ps
@@ -151,23 +144,12 @@ See `.env.example` for comprehensive documentation. Key variables:
 
 **Images**
 - `OPENCLAW_IMAGE`: Gateway and CLI image
-- `LLAMA_IMAGE`: llama.cpp server image
 - `CLOUDFLARED_IMAGE`: Cloudflare tunnel image
 - `ALPINE_IMAGE`: Base image for egress firewall sidecar
 
-**Models**
-- `EMBED_MODEL_FILE`: GGUF embedding model filename
-- `CHAT_MODEL_FILE`: GGUF chat model filename
-
-**Inference**
-- `LLAMA_THREADS`: CPU thread count
-- `LLAMA_GPU_LAYERS`: GPU layer offload (0 = CPU-only)
-- `EMBED_CTX`: Embedding context size (tokens)
-- `CHAT_CTX`: Chat context size (tokens)
-
 **Resources**
-- `LLAMA_EMBED_MEM`, `LLAMA_CHAT_MEM`, `GATEWAY_MEM`: Memory limits
-- `LLAMA_EMBED_CPUS`, `LLAMA_CHAT_CPUS`, `GATEWAY_CPUS`: CPU limits
+- `GATEWAY_MEM`: Memory limit
+- `GATEWAY_CPUS`: CPU limit
 - Reservation variants for QoS guarantees
 
 **LiteLLM (LLM Router)**
@@ -179,9 +161,7 @@ See `.env.example` for comprehensive documentation. Key variables:
 
 **Network**
 - `GATEWAY_PORT`: REST API port (default: 18789)
-- `EMBED_PORT`: Embedding server port (default: 8090, internal only)
-- `CHAT_PORT`: Chat server port (default: 8091, internal only)
-- `INTERNAL_SUBNET`: llama backend network (default: 172.27.0.0/24)
+- `INTERNAL_SUBNET`: LiteLLM + gateway network (default: 172.27.0.0/24)
 - `EGRESS_SUBNET`: egress-controlled network (default: 172.28.0.0/24)
 
 **Cloudflare Tunnel (optional)**
@@ -191,34 +171,20 @@ See `.env.example` for comprehensive documentation. Key variables:
 
 ### Resource Sizing
 
-**Minimal (CPU-only, 8GB RAM)**
+**Minimal (4GB RAM)**
 ```env
-LLAMA_THREADS=4
-LLAMA_GPU_LAYERS=0
-LLAMA_EMBED_MEM=1g
-LLAMA_CHAT_MEM=4g
 GATEWAY_MEM=2g
-EMBED_MODEL_FILE=nomic-embed-text-v1.5.f16.gguf
-CHAT_MODEL_FILE=mistral-7b-instruct-v0.2.Q6_K.gguf
+GATEWAY_CPUS=2
+LITELLM_MEM=512m
+LITELLM_CPUS=1
 ```
 
-**Standard (CPU-only, 16GB RAM)**
+**Standard (8GB+ RAM)**
 ```env
-LLAMA_THREADS=8
-LLAMA_GPU_LAYERS=0
-LLAMA_EMBED_MEM=2g
-LLAMA_CHAT_MEM=6g
 GATEWAY_MEM=4g
-```
-
-**GPU-Accelerated (NVIDIA CUDA, 24GB VRAM)**
-```env
-LLAMA_IMAGE=ghcr.io/ggml-org/llama.cpp:server-cuda
-LLAMA_THREADS=16
-LLAMA_GPU_LAYERS=40
-LLAMA_EMBED_MEM=2g
-LLAMA_CHAT_MEM=8g
-GATEWAY_MEM=4g
+GATEWAY_CPUS=4
+LITELLM_MEM=1g
+LITELLM_CPUS=2
 ```
 
 ## Security Details
@@ -242,7 +208,7 @@ Allowed traffic:
 ### Network Isolation
 
 **openclaw-internal** (bridge, internal=true):
-- llama-embed, llama-chat, litellm, openclaw-gateway, blocky, docker-socket-proxy, watchtower, dozzle, cloudflared, tailscale, openclaw-cli
+- litellm, openclaw-gateway, blocky, docker-socket-proxy, watchtower, dozzle, cloudflared, tailscale, openclaw-cli
 - No internet access (internal: true)
 - Services communicate on private network only
 
@@ -254,7 +220,7 @@ Allowed traffic:
 ### Container Hardening
 
 Services run as the least-privileged user their function allows:
-- **65534:65534** (nobody:nogroup): llama-embed, llama-chat, litellm, cloudflared, blocky, dozzle
+- **65534:65534** (nobody:nogroup): litellm, cloudflared, blocky, dozzle
 - **1000:1000** (node): openclaw-gateway, openclaw-cli (upstream image requirement)
 - **root**: egress-firewall (iptables), docker-socket-proxy (socket binding), watchtower (Docker API), tailscale (WireGuard)
 
@@ -281,14 +247,12 @@ Cloudflared depends on this healthcheck (service_healthy) before starting.
 **Check logs:**
 ```bash
 docker-compose logs openclaw-gateway
-docker-compose logs llama-embed
-docker-compose logs llama-chat
+docker-compose logs litellm
 ```
 
 **Common issues:**
-- Model files not found: Ensure models are in `./models/` directory
-- Out of memory: Increase `LLAMA_EMBED_MEM`, `LLAMA_CHAT_MEM` in .env
-- Port conflicts: Change `GATEWAY_PORT`, `EMBED_PORT`, `CHAT_PORT`
+- Out of memory: Increase `GATEWAY_MEM` in .env
+- Port conflicts: Change `GATEWAY_PORT`
 
 ### Egress firewall blocks legitimate traffic
 
@@ -310,10 +274,6 @@ docker-compose up -d
 ```bash
 # Check gateway health
 curl http://127.0.0.1:18789/health
-
-# Check internal connectivity
-docker exec opendeclawed-gateway curl -sf http://llama-embed:8090/health
-docker exec opendeclawed-gateway curl -sf http://llama-chat:8091/health
 
 # Check if gateway is on both networks
 docker network inspect openclaw-internal
@@ -353,35 +313,11 @@ Then restart:
 docker-compose down && docker-compose up -d
 ```
 
-### Using Different Models
-
-Download from Hugging Face (GGUF quantizations):
-
-```bash
-mkdir -p models
-
-# Embedding models
-# https://huggingface.co/nomic-ai/nomic-embed-text-v1.5
-wget -O models/nomic-embed-text-v1.5.f16.gguf \
-  https://huggingface.co/nomic-ai/nomic-embed-text-v1.5/resolve/main/gguf/nomic-embed-text-v1.5.f16.gguf
-
-# Chat models
-# https://huggingface.co/mistralai/Mistral-7B-Instruct-v0.2
-wget -O models/mistral-7b-instruct-v0.2.Q6_K.gguf \
-  https://huggingface.co/mistralai/Mistral-7B-Instruct-v0.2/resolve/main/...
-
-# Update .env
-echo "EMBED_MODEL_FILE=nomic-embed-text-v1.5.f16.gguf" >> .env
-echo "CHAT_MODEL_FILE=mistral-7b-instruct-v0.2.Q6_K.gguf" >> .env
-
-docker-compose up -d
-```
-
 ### Monitoring
 
 ```bash
 # Real-time resource usage
-docker stats opendeclawed-gateway opendeclawed-llama-embed opendeclawed-llama-chat
+docker stats opendeclawed-gateway opendeclawed-litellm
 
 # Logs with follow
 docker-compose logs -f openclaw-gateway
@@ -423,7 +359,6 @@ Do NOT open public issues for security vulnerabilities.
 ## References
 
 - OpenClaw: https://github.com/openagentsinc/openclaw
-- llama.cpp: https://github.com/ggml-org/llama.cpp
 - Docker Compose: https://docs.docker.com/compose/
 - Cloudflare Tunnels: https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/
 - Linux Capabilities: https://man7.org/linux/man-pages/man7/capabilities.7.html

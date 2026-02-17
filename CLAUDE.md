@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-OpenDeclawed is a security-hardened Docker deployment for OpenClaw, an AI agent platform. It combines local LLM inference (llama.cpp) with OpenAI-compatible routing (LiteLLM), secured behind kernel-level egress control, DNS filtering (Blocky), container hardening, and multiple private ingress options (Cloudflare Tunnel, Tailscale).
+OpenDeclawed is a security-hardened Docker deployment for OpenClaw, an AI agent platform. It combines OpenAI-compatible LLM routing (LiteLLM) with external backends (Ollama, MLX, vLLM), secured behind kernel-level egress control, DNS filtering (Blocky), container hardening, and multiple private ingress options (Cloudflare Tunnel, Tailscale).
 
 ## Common Commands
 
@@ -40,14 +40,14 @@ docker-compose down -v  # Remove volumes too
 ## Architecture
 
 **Network topology** — two isolated Docker networks:
-- `openclaw-internal` (172.27.0.0/24, `internal: true`): llama-embed, llama-chat, litellm, openclaw-gateway, blocky, docker-socket-proxy, watchtower, dozzle, cloudflared, tailscale, openclaw-cli — no internet access
+- `openclaw-internal` (172.27.0.0/24, `internal: true`): litellm, openclaw-gateway, blocky, docker-socket-proxy, watchtower, dozzle, cloudflared, tailscale, openclaw-cli — no internet access
 - `openclaw-egress` (172.28.0.0/24): openclaw-gateway, blocky, cloudflared, tailscale, dozzle, openclaw-cli — egress-firewall controlled
 
-**Request flow**: External → Cloudflare Tunnel/Tailscale → openclaw-gateway:18789 → LiteLLM:4000 → llama-chat:8091 / llama-embed:8090
+**Request flow**: External → Cloudflare Tunnel/Tailscale → openclaw-gateway:18789 → LiteLLM:4000 → Ollama / external backends
 
 **Egress firewall**: Persistent sidecar (not one-shot init) with 60s iptables re-check loop on DOCKER-USER chain. Drops RFC1918, link-local, multicast. Gateway and all egress containers use blocky:53 (static IP 172.27.0.53) for DNS-level threat filtering.
 
-**LiteLLM abstraction**: `litellm_config.yaml` routes model names to backends. Swap llama.cpp ↔ MLX ↔ Ollama without changing openclaw config.
+**LiteLLM abstraction**: `litellm_config.yaml` routes model names to backends. Swap Ollama ↔ MLX ↔ vLLM ↔ cloud APIs without changing openclaw config.
 
 ## Key Files
 
@@ -79,7 +79,6 @@ These patterns are enforced by the project. Follow them in all contributions:
 - **Bash** for setup/utility scripts (POSIX-compatible where possible)
 - **Python 3** for skill vetting pipeline
 - **YAML** for Docker Compose, LiteLLM config, Blocky config, pre-commit
-- **GGUF models** for local inference (llama.cpp)
 
 ## Pre-commit Hooks
 

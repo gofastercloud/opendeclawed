@@ -1,5 +1,9 @@
 # Deploying a Self-Hosted AI Agent Without Getting Owned
 
+<p align="center">
+  <img src="../images/opendeclawed.png" alt="OpenDeclawed" width="200">
+</p>
+
 *How to run OpenClaw in Docker with zero container escape, zero lateral movement, and zero exposed ports.*
 
 ---
@@ -18,7 +22,7 @@ A compromised agent — or even a sufficiently creative prompt injection — cou
 
 We use a three-tier network design inside Docker:
 
-**Tier 1: Internal-only** — Local inference containers (llama.cpp for embeddings and light chat) live on a Docker bridge network marked `internal: true`. They cannot reach the internet. Period. Even if someone achieves RCE inside these containers, there's nowhere to go.
+**Tier 1: Internal-only** — The LiteLLM proxy lives on a Docker bridge network marked `internal: true`, routing LLM requests to Ollama running natively on the host (via `host.docker.internal`). The internal network itself has no internet access.
 
 **Tier 2: Egress-controlled** — The main agent gateway and the tunnel connector live on a second bridge network. An init container installs iptables rules in Docker's `DOCKER-USER` chain that DROP all traffic to RFC1918 private ranges (10.0.0.0/8, 192.168.0.0/16), link-local, multicast, and the Docker gateway IP. Containers can reach the internet (for API calls), but cannot reach your LAN, your NAS, your printer, or anything else on your home network.
 
@@ -27,8 +31,10 @@ We use a three-tier network design inside Docker:
 ```
 Internet → Cloudflare Edge → GitHub OAuth → cloudflared → gateway
                                                               ↕
-                                              llama-embed + llama-chat
-                                              (air-gapped, no internet)
+                                                           litellm
+                                                     (LLM router/proxy)
+                                                              ↕
+                                                    Ollama on host machine
 ```
 
 ## Container Hardening
@@ -38,8 +44,8 @@ Every container in the stack enforces:
 - **Read-only root filesystem** — Prevents an attacker from writing malware or modifying binaries. Writable tmpfs mounts are provided where needed, marked `noexec,nosuid,nodev`.
 - **`cap_drop: ALL`** — Zero Linux capabilities. We selectively add back only `NET_BIND_SERVICE` (for the gateway) and `NET_ADMIN`/`NET_RAW` (for the egress firewall sidecar).
 - **`no-new-privileges: true`** — Prevents escalation via setuid/setgid binaries.
-- **Resource limits** — Memory, CPU, and PID limits on every container. A fork bomb inside llama-chat can't OOM your host.
-- **Non-root user** — llama.cpp and cloudflared run as `nobody:nogroup` (65534:65534).
+- **Resource limits** — Memory, CPU, and PID limits on every container. A fork bomb inside a container can't OOM your host.
+- **Non-root user** — cloudflared runs as `nobody:nogroup` (65534:65534).
 - **Isolated PID/IPC namespaces** — No shared PID or IPC namespaces between containers. Each container has its own `/proc` view and cannot read other containers' environment variables or attach to shared memory segments.
 
 ## The Egress Firewall Trick
@@ -76,17 +82,13 @@ Running every task through Opus 4.6 is like hiring a lawyer to check your mailbo
 - **Quick tasks** (reminders, simple lookups): Haiku 4.5
 - **Default chat**: Sonnet 4.5
 - **Deep reasoning** (analysis, multi-step planning): Opus 4.6
-- **Embeddings**: Local Nomic Embed v1.5 via llama.cpp — zero cost, zero latency, zero data leaving your machine
+- **Embeddings**: Local via Ollama — zero cost, zero latency, zero data leaving your machine
 
 ## Local Inference
 
-Two llama.cpp containers run on the air-gapped internal network:
+LLM inference is handled by Ollama running natively on the host machine, accessed by the Docker stack through the LiteLLM proxy via `host.docker.internal:11434`. This replaces the need for containerized inference servers.
 
-1. **Embedding server** — Nomic Embed v1.5 (Q5_K_M quantization). Handles all memory search and document embedding. Since embeddings are called frequently and the data is often sensitive, keeping them local is both a cost and privacy win.
-
-2. **Light chat server** — Llama 3.2 3B (Q5_K_M). Handles simple classification, formatting, and tasks where latency matters more than capability. Not a replacement for Sonnet/Opus, but good enough for "is this message a question or a command?"
-
-Both run on the internal-only Docker network with zero internet access. Even if someone could exploit a vulnerability in the GGUF parser, the container is read-only, capability-less, and has no network path to the outside world.
+Ollama manages model downloads, quantization, and GPU acceleration natively. The LiteLLM proxy inside the Docker stack presents a single OpenAI-compatible endpoint to OpenClaw, routing requests to Ollama transparently. You can run any Ollama-supported model (Llama 3, Mistral, Nomic Embed, etc.) without changes to the Docker configuration — just update `litellm_config.yaml` with the model names.
 
 ## Getting Started
 
@@ -115,7 +117,7 @@ No security architecture is complete without an honest limitations section:
 
 ## Conclusion
 
-Self-hosted AI agents are powerful tools that deserve the same security rigor we apply to production infrastructure. The patterns in this post — read-only containers, capability dropping, persistent egress firewalling, DNS threat filtering, Docker socket proxying, skill supply chain vetting, zero-trust ingress, air-gapped local inference — aren't novel individually, but combining them into a single Docker Compose stack makes defense-in-depth accessible to anyone comfortable with `docker compose up`.
+Self-hosted AI agents are powerful tools that deserve the same security rigor we apply to production infrastructure. The patterns in this post — read-only containers, capability dropping, persistent egress firewalling, DNS threat filtering, Docker socket proxying, skill supply chain vetting, zero-trust ingress, and local inference via Ollama — aren't novel individually, but combining them into a single Docker Compose stack makes defense-in-depth accessible to anyone comfortable with `docker compose up`.
 
 The full repo, including Cloudflare Tunnel and Tailscale mesh VPN ingress options, opt-in telemetry, and messaging channel integration guides, is available on GitHub.
 
