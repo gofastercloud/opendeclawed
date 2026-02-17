@@ -31,15 +31,10 @@ import subprocess
 import sys
 import tempfile
 import time
+import urllib.request
+import urllib.error
 from datetime import datetime, timezone
 from pathlib import Path
-
-try:
-    import requests
-
-    HAS_REQUESTS = True
-except ImportError:
-    HAS_REQUESTS = False
 
 # ── Config ───────────────────────────────────────────────────────────────
 
@@ -123,6 +118,56 @@ def save_allowlist(data: dict) -> None:
     log("ok", f"Allowlist updated: {ALLOWLIST_PATH}")
 
 
+def _vt_request(method: str, url: str, headers: dict,
+                data: bytes | None = None,
+                content_type: str | None = None,
+                timeout: int = 30) -> tuple[int, dict]:
+    """Make an HTTP request using urllib (stdlib). Returns (status_code, json_body)."""
+    req = urllib.request.Request(url, data=data, headers=headers, method=method)
+    if content_type:
+        req.add_header("Content-Type", content_type)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            body = json.loads(resp.read().decode())
+            return resp.status, body
+    except urllib.error.HTTPError as e:
+        try:
+            body = json.loads(e.read().decode())
+        except Exception:
+            body = {}
+        return e.code, body
+
+
+def _vt_upload_file(url: str, headers: dict, file_path: str,
+                    timeout: int = 120) -> tuple[int, dict]:
+    """Upload a file to VirusTotal using multipart/form-data via urllib."""
+    boundary = f"----SafeInstallBoundary{int(time.time())}"
+    filename = os.path.basename(file_path)
+
+    with open(file_path, "rb") as f:
+        file_data = f.read()
+
+    body = (
+        f"--{boundary}\r\n"
+        f'Content-Disposition: form-data; name="file"; filename="{filename}"\r\n'
+        f"Content-Type: application/octet-stream\r\n\r\n"
+    ).encode() + file_data + f"\r\n--{boundary}--\r\n".encode()
+
+    upload_headers = dict(headers)
+    upload_headers["Content-Type"] = f"multipart/form-data; boundary={boundary}"
+
+    req = urllib.request.Request(url, data=body, headers=upload_headers, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return resp.status, json.loads(resp.read().decode())
+    except urllib.error.HTTPError as e:
+        try:
+            resp_body = json.loads(e.read().decode())
+        except Exception:
+            resp_body = {}
+        return e.code, resp_body
+
+
 # ── Step 1: Download / Locate ────────────────────────────────────────────
 
 
@@ -133,6 +178,19 @@ def fetch_skill(skill_name: str, work_dir: str) -> str:
     if local.exists() and local.is_file():
         log("info", f"Using local skill archive: {local}")
         return str(local)
+
+    # If it's a directory, tar it up for scanning
+    if local.exists() and local.is_dir():
+        log("info", f"Skill is a directory: {local}")
+        dest = os.path.join(work_dir, f"{local.name}.tar.gz")
+        subprocess.run(
+            ["tar", "czf", dest, "-C", str(local.parent), local.name],
+            check=True,
+            capture_output=True,
+            timeout=30,
+        )
+        log("info", f"Archived directory to: {dest}")
+        return dest
 
     # Download from ClawHub via openclaw CLI
     log("info", f"Fetching skill '{skill_name}' from ClawHub...")
@@ -285,20 +343,16 @@ def virustotal_scan(file_hash: str, file_path: str) -> dict:
         log("warn", "VIRUSTOTAL_API_KEY not set — skipping VT scan")
         return {"status": "skipped", "reason": "no_api_key"}
 
-    if not HAS_REQUESTS:
-        log("warn", "requests library not available — skipping VT scan")
-        log("warn", "Install: pip install requests")
-        return {"status": "skipped", "reason": "no_requests_lib"}
-
     headers = {"x-apikey": VT_API_KEY}
 
     # Check by hash first
     log("info", f"Checking VirusTotal for hash {file_hash[:16]}...")
-    resp = requests.get(f"{VT_API_URL}/files/{file_hash}", headers=headers, timeout=30)
+    status_code, data = _vt_request("GET", f"{VT_API_URL}/files/{file_hash}",
+                                    headers=headers)
 
-    if resp.status_code == 200:
-        data = resp.json()["data"]["attributes"]
-        stats = data.get("last_analysis_stats", {})
+    if status_code == 200:
+        attrs = data["data"]["attributes"]
+        stats = attrs.get("last_analysis_stats", {})
         malicious = stats.get("malicious", 0)
         suspicious = stats.get("suspicious", 0)
         total = sum(stats.values())
@@ -321,34 +375,29 @@ def virustotal_scan(file_hash: str, file_path: str) -> dict:
 
         return result
 
-    elif resp.status_code == 404:
+    elif status_code == 404:
         # Not in VT database — upload for scanning
         log("info", "Hash unknown to VirusTotal — uploading for scan...")
-        with open(file_path, "rb") as f:
-            upload_resp = requests.post(
-                f"{VT_API_URL}/files",
-                headers=headers,
-                files={"file": f},
-                timeout=120,
-            )
+        upload_code, upload_data = _vt_upload_file(
+            f"{VT_API_URL}/files", headers, file_path
+        )
 
-        if upload_resp.status_code == 200:
-            analysis_id = upload_resp.json()["data"]["id"]
+        if upload_code == 200:
+            analysis_id = upload_data["data"]["id"]
             log("info", f"Uploaded. Analysis ID: {analysis_id}")
             log("info", "Waiting for scan results (up to 120s)...")
 
             # Poll for results
             for _ in range(12):
                 time.sleep(10)
-                poll = requests.get(
-                    f"{VT_API_URL}/analyses/{analysis_id}",
-                    headers=headers,
-                    timeout=30,
+                poll_code, poll_data = _vt_request(
+                    "GET", f"{VT_API_URL}/analyses/{analysis_id}",
+                    headers=headers
                 )
-                if poll.status_code == 200:
-                    status = poll.json()["data"]["attributes"]["status"]
+                if poll_code == 200:
+                    status = poll_data["data"]["attributes"]["status"]
                     if status == "completed":
-                        stats = poll.json()["data"]["attributes"]["stats"]
+                        stats = poll_data["data"]["attributes"]["stats"]
                         malicious = stats.get("malicious", 0)
                         suspicious = stats.get("suspicious", 0)
                         total = sum(stats.values())
@@ -368,10 +417,10 @@ def virustotal_scan(file_hash: str, file_path: str) -> dict:
             log("warn", "VirusTotal scan timed out — treating as inconclusive")
             return {"status": "timeout", "clean": False}
         else:
-            log("warn", f"VirusTotal upload failed: {upload_resp.status_code}")
+            log("warn", f"VirusTotal upload failed: {upload_code}")
             return {"status": "upload_failed", "clean": False}
     else:
-        log("warn", f"VirusTotal API error: {resp.status_code}")
+        log("warn", f"VirusTotal API error: {status_code}")
         return {"status": "api_error", "clean": False}
 
 
@@ -468,11 +517,6 @@ def run_pipeline(skill_name: str, vet_only: bool = False, force: bool = False) -
     # Check if already allowlisted
     al = load_allowlist()
 
-    policy = al.get("policy", {})
-    if policy.get("require_virustotal", True) and not HAS_REQUESTS:
-        log("error", "requests library required for VirusTotal scanning (policy: require_virustotal)")
-        log("error", "Install: pip install requests")
-        sys.exit(1)
     if skill_name in al.get("allowlist", {}) and not force:
         entry = al["allowlist"][skill_name]
         log("ok", f"Skill '{skill_name}' is already allowlisted")
