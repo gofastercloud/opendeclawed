@@ -59,6 +59,13 @@ blocking:
         github.com
         raw.githubusercontent.com
         objects.githubusercontent.com
+        # Search engines (SearXNG upstream)
+        www.google.com
+        www.bing.com
+        duckduckgo.com
+        html.duckduckgo.com
+        search.brave.com
+        en.wikipedia.org
 
   # Apply all blocklist groups to all clients
   clientGroupsBlock:

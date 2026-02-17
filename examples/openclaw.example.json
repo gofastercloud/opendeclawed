@@ -68,9 +68,22 @@
       }
     }
   },
+  "tools": {
+    "deny": ["web_search"]
+  },
   "commands": {
     "native": "auto",
     "nativeSkills": "auto"
+  },
+  "skills": {
+    "entries": {
+      "searxng-search": {
+        "enabled": true,
+        "env": {
+          "SEARXNG_URL": "http://searxng:8080"
+        }
+      }
+    }
   },
   "gateway": {
     "port": 18789,

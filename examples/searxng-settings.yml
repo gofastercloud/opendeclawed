@@ -1,0 +1,106 @@
+# ============================================================================
+# SearXNG Settings — Minimal Agent-Optimized Configuration
+# ============================================================================
+# Optimized for programmatic (JSON API) use by OpenClaw agents.
+# Disables public-instance features, autocomplete, and non-text search.
+#
+# Mounted read-only at /etc/searxng/settings.yml in the container.
+# See: https://docs.searxng.org/admin/settings/settings.html
+
+use_default_settings: true
+
+general:
+  instance_name: "OpenDeclawed Search"
+  debug: true
+  # Disable public instance features
+  donation_url: false
+  contact_url: false
+  enable_metrics: false
+
+search:
+  # Enable JSON format for programmatic API access
+  formats:
+    - html
+    - json
+  safe_search: 0
+  autocomplete: ""
+  default_lang: "en"
+
+server:
+  # Bind to all interfaces (container networking)
+  bind_address: "0.0.0.0"
+  port: 8080
+  secret_key: "${SEARXNG_SECRET}"
+  # Disable public instance features
+  public_instance: false
+  # Rate limiting
+  limiter: true
+  image_proxy: false
+
+ui:
+  # Minimal UI (agents use JSON API, not HTML)
+  static_use_hash: true
+  default_theme: simple
+  results_on_new_tab: false
+
+# Enable only text-relevant search engines
+engines:
+  # -- Google --
+  - name: google
+    engine: google
+    shortcut: g
+    disabled: false
+
+  # -- Bing --
+  - name: bing
+    engine: bing
+    shortcut: b
+    disabled: false
+
+  # -- DuckDuckGo --
+  - name: duckduckgo
+    engine: duckduckgo
+    shortcut: ddg
+    disabled: false
+
+  # -- Wikipedia --
+  - name: wikipedia
+    engine: wikipedia
+    shortcut: wp
+    disabled: false
+
+  # -- Brave Search --
+  - name: brave
+    engine: brave
+    shortcut: br
+    disabled: false
+
+  # Disable image/video/music engines (text-only for agents)
+  - name: google images
+    engine: google_images
+    disabled: true
+  - name: bing images
+    engine: bing_images
+    disabled: true
+  - name: google videos
+    engine: google_videos
+    disabled: true
+  - name: bing videos
+    engine: bing_videos
+    disabled: true
+  - name: youtube
+    engine: youtube_noapi
+    disabled: true
+  - name: dailymotion
+    engine: dailymotion
+    disabled: true
+  - name: soundcloud
+    engine: soundcloud
+    disabled: true
+
+outgoing:
+  # Request timeout for upstream search engines
+  request_timeout: 10.0
+  # Max concurrent requests to search engines
+  pool_maxsize: 20
+  pool_connections: 10

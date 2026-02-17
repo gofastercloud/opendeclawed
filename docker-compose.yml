@@ -191,6 +191,7 @@ services:
             iptables -A DOCKER-USER -s $INTERNAL_SUBNET -d $INTERNAL_SUBNET -p tcp --dport 2375 -j ACCEPT    # Watchtower/Dozzle->Socket-proxy
             iptables -A DOCKER-USER -s $INTERNAL_SUBNET -d $INTERNAL_SUBNET -p tcp --dport $${GATEWAY_PORT:-18789} -j ACCEPT  # Cloudflared/Tailscale->Gateway
             iptables -A DOCKER-USER -s $INTERNAL_SUBNET -d $INTERNAL_SUBNET -p tcp --dport 5005 -j ACCEPT    # Cloudflared->Dozzle (tunnel /dozzle route)
+            iptables -A DOCKER-USER -s $INTERNAL_SUBNET -d $INTERNAL_SUBNET -p tcp --dport $${SEARXNG_PORT:-8080} -j ACCEPT  # Gateway->SearXNG
             iptables -A DOCKER-USER -s $INTERNAL_SUBNET -d $INTERNAL_SUBNET -p icmp -j ACCEPT                # Health checks
 
             # ── ALLOW specific inter-container traffic (openclaw-egress) ──
@@ -296,6 +297,8 @@ services:
       openclaw-egress: {}
     dns:
       - "${BLOCKY_IP:-172.27.0.53}"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - ${LITELLM_CONFIG:-./litellm_config.yaml}:/app/config.yaml:ro
     environment:
@@ -681,6 +684,60 @@ services:
       start_period: 15s
     depends_on:
       egress-firewall:
+        condition: service_healthy
+    labels:
+      - "com.centurylinklabs.watchtower.enable=true"
+
+  # -------------------------------------------------------------------
+  # SEARXNG: Self-hosted metasearch engine for agent web search
+  # -------------------------------------------------------------------
+  # Privacy-respecting metasearch engine that aggregates results from
+  # multiple search engines. Used as a workspace skill replacement for
+  # OpenClaw's built-in web_search tool (which only supports Brave/Perplexity).
+  #
+  # Profile: always-on (core infrastructure for agent search)
+  #
+  # Security:
+  #  - Internal network: gateway reaches searxng:8080
+  #  - Egress network: SearXNG reaches internet for search queries
+  #  - DNS via blocky (threat filtering + DoH privacy)
+  #  - No host port binding (internal only)
+  #  - read-only root, all caps dropped, no_new_privileges
+  #  - Unprivileged user 65534:65534
+  searxng:
+    <<: *hardened-defaults
+    image: "${SEARXNG_IMAGE:-searxng/searxng:latest}"
+    container_name: opendeclawed-searxng
+    networks:
+      openclaw-internal: {}
+      openclaw-egress: {}
+    dns:
+      - "${BLOCKY_IP:-172.27.0.53}"
+    volumes:
+      - ./examples/searxng-settings.yml:/etc/searxng/settings.yml:ro
+    environment:
+      - SEARXNG_SECRET=${SEARXNG_SECRET_KEY:-}
+    tmpfs:
+      - /etc/searxng:size=16m,noexec,nosuid,nodev
+      - /tmp:size=64m,noexec,nosuid,nodev
+    deploy:
+      resources:
+        limits:
+          cpus: "${SEARXNG_CPUS:-0.5}"
+          memory: "${SEARXNG_MEM:-256m}"
+          pids: 128
+    read_only: true
+    user: "65534:65534"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:${SEARXNG_PORT:-8080}/healthz || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    depends_on:
+      egress-firewall:
+        condition: service_healthy
+      blocky:
         condition: service_healthy
     labels:
       - "com.centurylinklabs.watchtower.enable=true"
