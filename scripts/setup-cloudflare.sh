@@ -56,7 +56,7 @@ echo "Creating tunnel '$TUNNEL_NAME'..."
 # Generate a random tunnel secret
 TUNNEL_SECRET=$(python3 -c "import secrets,base64; print(base64.b64encode(secrets.token_bytes(32)).decode())")
 
-PAYLOAD=$(json_obj name "$TUNNEL_NAME" tunnel_secret "$TUNNEL_SECRET" config_src "local")
+PAYLOAD=$(json_obj name "$TUNNEL_NAME" tunnel_secret "$TUNNEL_SECRET" config_src "cloudflare")
 TUNNEL_RESP=$(cf_api POST "/accounts/$CF_ACCOUNT_ID/cfd_tunnel" -d "$PAYLOAD")
 
 TUNNEL_ID=$(echo "$TUNNEL_RESP" | python3 -c "import sys,json; print(json.load(sys.stdin)['result']['id'])")
@@ -89,6 +89,38 @@ print(json.dumps({
 cf_api POST "/zones/$CF_ZONE_ID/dns_records" -d "$PAYLOAD" >/dev/null
 
 echo "✓ DNS record created"
+
+# ── 2b. Configure Tunnel Ingress Rules ───────────────────────────────
+echo "Configuring tunnel ingress rules..."
+INGRESS_PAYLOAD=$(python3 -c "
+import json, sys
+hostname = sys.argv[1]
+gw_port = sys.argv[2]
+dozzle_port = sys.argv[3]
+print(json.dumps({
+    'config': {
+        'ingress': [
+            {
+                'hostname': hostname,
+                'path': '/dozzle*',
+                'service': 'http://dozzle:' + dozzle_port
+            },
+            {
+                'hostname': hostname,
+                'service': 'http://openclaw-gateway:' + gw_port
+            },
+            {
+                'service': 'http_status:404'
+            }
+        ]
+    }
+}))
+" "$FQDN" "${GATEWAY_PORT:-18789}" "${DOZZLE_PORT:-5005}")
+cf_api PUT "/accounts/$CF_ACCOUNT_ID/cfd_tunnel/${TUNNEL_ID}/configurations" \
+  -d "$INGRESS_PAYLOAD" >/dev/null
+
+echo "✓ Tunnel ingress: $FQDN → openclaw-gateway:${GATEWAY_PORT:-18789}"
+echo "✓ Tunnel ingress: $FQDN/dozzle → dozzle:${DOZZLE_PORT:-5005}"
 
 # ── 3. Create Cloudflare Access Application (if GitHub OAuth configured) ─
 if [[ -n "${GITHUB_OAUTH_CLIENT_ID:-}" && -n "${GITHUB_OAUTH_CLIENT_SECRET:-}" ]]; then
