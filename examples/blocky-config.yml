@@ -81,7 +81,7 @@ blocking:
 queryLog:
   type: console
   # Log all queries for forensic analysis
-  logRetentionDays: 7
+  # logRetentionDays: 7  # Only applies to database-backed logging, not console type
 
 # ── Caching ───────────────────────────────────────────────────────────
 caching:

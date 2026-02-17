@@ -3,9 +3,13 @@
 # Deletes in reverse creation order: Access App → IDP → DNS → Tunnel
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 ENV_FILE="$PROJECT_DIR/.env"
+
+# ── Load shared libraries ────────────────────────────────────────────────
+source "${SCRIPT_DIR}/lib/env-helpers.sh"
+source "${SCRIPT_DIR}/lib/cloudflare-helpers.sh"
 
 # ── Parse flags ──────────────────────────────────────────────────────────
 FORCE=false
@@ -18,14 +22,11 @@ done
 
 # ── Load .env ────────────────────────────────────────────────────────────
 if [[ ! -f "$ENV_FILE" ]]; then
-  echo "Error: $ENV_FILE not found." >&2
+  error "$ENV_FILE not found."
   exit 1
 fi
 
-set -a
-# shellcheck disable=SC1090
-source "$ENV_FILE"
-set +a
+load_env "$ENV_FILE"
 
 # ── Validate minimum required vars ──────────────────────────────────────
 MISSING=()
@@ -36,48 +37,10 @@ for var in CF_API_TOKEN CF_ACCOUNT_ID; do
 done
 
 if [[ ${#MISSING[@]} -gt 0 ]]; then
-  echo "Error: Missing required variables in .env:" >&2
+  error "Missing required variables in .env:"
   printf '  %s\n' "${MISSING[@]}" >&2
   exit 1
 fi
-
-CF_API="https://api.cloudflare.com/client/v4"
-AUTH_HEADER="Authorization: Bearer $CF_API_TOKEN"
-
-# ── Helpers (mirrored from setup-cloudflare.sh) ─────────────────────────
-
-# Make Cloudflare API call and check for success
-cf_api() {
-  local method="$1" endpoint="$2"
-  shift 2
-  local response
-  response=$(curl -sf -X "$method" \
-    "$CF_API$endpoint" \
-    -H "$AUTH_HEADER" \
-    -H "Content-Type: application/json" \
-    "$@") || { echo "Error: API call failed: $method $endpoint" >&2; return 1; }
-
-  local success
-  success=$(echo "$response" | python3 -c "import sys,json; print(json.load(sys.stdin).get('success', False))" 2>/dev/null || echo "False")
-  if [[ "$success" != "True" ]]; then
-    echo "Error: API returned failure for $method $endpoint" >&2
-    echo "$response" | python3 -c "import sys,json; errs=json.load(sys.stdin).get('errors',[]); [print(f'  {e}') for e in errs]" 2>/dev/null
-    return 1
-  fi
-  echo "$response"
-}
-
-# Update a var in .env (append if missing, replace if present)
-set_env_var() {
-  local key="$1" value="$2"
-  if grep -q "^${key}=" "$ENV_FILE" 2>/dev/null; then
-    local tmp
-    tmp=$(mktemp)
-    sed "s|^${key}=.*|${key}=${value}|" "$ENV_FILE" > "$tmp" && mv "$tmp" "$ENV_FILE"
-  else
-    echo "${key}=${value}" >> "$ENV_FILE"
-  fi
-}
 
 # ── Show what will be deleted ────────────────────────────────────────────
 echo "=== Cloudflare Teardown ==="
@@ -113,7 +76,7 @@ if [[ -n "${CF_ACCESS_APP_ID:-}" ]]; then
   echo "Deleting Access application $CF_ACCESS_APP_ID..."
   if cf_api DELETE "/accounts/$CF_ACCOUNT_ID/access/apps/$CF_ACCESS_APP_ID" >/dev/null; then
     echo "✓ Access application deleted"
-    set_env_var "CF_ACCESS_APP_ID" ""
+    save_env "CF_ACCESS_APP_ID" "" "$ENV_FILE"
   else
     echo "✗ Failed to delete Access application" >&2
     ((ERRORS++))
@@ -127,7 +90,7 @@ if [[ -n "${CF_IDP_ID:-}" ]]; then
   echo "Deleting Access IDP $CF_IDP_ID..."
   if cf_api DELETE "/accounts/$CF_ACCOUNT_ID/access/identity_providers/$CF_IDP_ID" >/dev/null; then
     echo "✓ Access IDP deleted"
-    set_env_var "CF_IDP_ID" ""
+    save_env "CF_IDP_ID" "" "$ENV_FILE"
   else
     echo "✗ Failed to delete Access IDP" >&2
     ((ERRORS++))
@@ -176,8 +139,8 @@ if [[ -n "${CF_TUNNEL_ID:-}" ]]; then
   echo "Deleting tunnel $CF_TUNNEL_ID..."
   if cf_api DELETE "/accounts/$CF_ACCOUNT_ID/cfd_tunnel/$CF_TUNNEL_ID" >/dev/null; then
     echo "✓ Tunnel deleted"
-    set_env_var "CF_TUNNEL_ID" ""
-    set_env_var "CLOUDFLARE_TOKEN" ""
+    save_env "CF_TUNNEL_ID" "" "$ENV_FILE"
+    save_env "CLOUDFLARE_TOKEN" "" "$ENV_FILE"
   else
     echo "✗ Failed to delete tunnel" >&2
     ((ERRORS++))

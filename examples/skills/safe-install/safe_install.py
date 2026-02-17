@@ -79,6 +79,11 @@ BLOCKED_PATTERNS = [
     r"sk-ant-",
     r"BEGIN.*PRIVATE",
     r"compile\s*\(.+exec",
+    r"pickle\.(loads?|Unpickler)\(",        # deserialization attacks
+    r"yaml\.load\(",                         # unsafe YAML loading (use yaml.safe_load)
+    r"marshal\.loads?\(",                    # code object deserialization
+    r"ctypes\.",                             # arbitrary memory access / FFI
+    r"webbrowser\.",                         # potential exfiltration vector
 ]
 
 # Permissions that skills must never request
@@ -91,7 +96,7 @@ MAX_SKILL_SIZE_MB = 50
 
 
 def log(level: str, msg: str) -> None:
-    icons = {"info": "[+]", "warn": "[!]", "error": "[x]", "ok": "[✓]"}
+    icons = {"info": "[+]", "warn": "[!]", "error": "[x]", "ok": "[+]"}
     print(f"{icons.get(level, '[?]')} {msg}")
 
 
@@ -134,7 +139,7 @@ def fetch_skill(skill_name: str, work_dir: str) -> str:
     dest = os.path.join(work_dir, f"{skill_name}.tar.gz")
     try:
         subprocess.run(
-            ["openclaw", "skill", "download", skill_name, "--output", dest],
+            ["openclaw", "skill", "download", "--", skill_name, "--output", dest],
             check=True,
             capture_output=True,
             text=True,
@@ -407,7 +412,7 @@ def install_skill(skill_name: str, local_archive: str = "") -> None:
         cmd = ["openclaw", "skill", "install", "--from-archive", local_archive]
     else:
         log("info", f"Installing skill '{skill_name}' from ClawHub...")
-        cmd = ["openclaw", "skill", "install", skill_name]
+        cmd = ["openclaw", "skill", "install", "--", skill_name]
 
     try:
         result = subprocess.run(
@@ -498,7 +503,8 @@ def run_pipeline(skill_name: str, vet_only: bool = False, force: bool = False) -
 
         if policy.get("require_virustotal", True) and not vt_result.get("clean", False):
             if vt_result.get("status") == "skipped":
-                log("warn", "VT skipped but policy requires it — proceeding with warning")
+                log("error", "VirusTotal scan required by policy but API key not set — REJECTING install")
+                sys.exit(1)
             elif vt_result.get("status") == "timeout":
                 log("error", "VT scan inconclusive — REJECTING (policy: require_virustotal)")
                 quarantine(skill_name, file_path, "VirusTotal scan inconclusive")

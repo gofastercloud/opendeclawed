@@ -78,7 +78,7 @@
     "bind": "lan",
     "controlUi": {
       "enabled": true,
-      "allowInsecureAuth": true
+      "allowInsecureAuth": false
     },
     "auth": {
       "mode": "token",

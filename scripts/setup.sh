@@ -19,6 +19,7 @@ set -euo pipefail
 
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
 CYAN='\033[0;36m'; BOLD='\033[1m'; DIM='\033[2m'; NC='\033[0m'
+OPENCLAW_VERSION="2026.2.14"
 info()  { echo -e "${GREEN}[+]${NC} $*"; }
 warn()  { echo -e "${YELLOW}[!]${NC} $*"; }
 error() { echo -e "${RED}[x]${NC} $*" >&2; exit 1; }
@@ -33,6 +34,7 @@ WORKSPACE_DIR="${OPENCLAW_WORKSPACE_DIR:-${CONFIG_DIR}/workspace}"
 COMPOSE_FILE="${REPO_DIR}/docker-compose.yml"
 ENV_FILE="${REPO_DIR}/.env"
 INTERACTIVE=true
+SKIP_VALIDATION=false
 
 # Credential vars — populated by prompts or environment
 ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:-}"
@@ -50,10 +52,12 @@ TS_HOSTNAME="${TS_HOSTNAME:-openclaw}"
 for arg in "$@"; do
     case "$arg" in
         --non-interactive|-q) INTERACTIVE=false ;;
+        --skip-validation) SKIP_VALIDATION=true ;;
         --help|-h)
             echo "Usage: $0 [--non-interactive | -q] [--help]"
             echo ""
             echo "  --non-interactive, -q  Accept defaults, read config from env vars / .env file"
+            echo "  --skip-validation      Accept invalid credential formats (non-interactive only)"
             echo "  --help                 Show this help"
             echo ""
             echo "Environment variables for non-interactive mode:"
@@ -96,10 +100,10 @@ HEADER
         tmpfile=$(mktemp "${ENV_FILE}.XXXXXX")
         chmod 600 "${tmpfile}"
         grep -v "^${key}=" "${ENV_FILE}" > "${tmpfile}"
-        printf '%s="%s"\n' "${key}" "${value}" >> "${tmpfile}"
+        printf '%s=%s\n' "${key}" "${value}" >> "${tmpfile}"
         mv "${tmpfile}" "${ENV_FILE}"
     else
-        printf '%s="%s"\n' "${key}" "${value}" >> "${ENV_FILE}"
+        printf '%s=%s\n' "${key}" "${value}" >> "${ENV_FILE}"
     fi
 }
 
@@ -118,8 +122,12 @@ validate_format() {
                     [[ "${override}" == "accept" ]] && return 0
                     return 1
                 fi
-                warn "Accepting in non-interactive mode."
-                return 0
+                if [ "${SKIP_VALIDATION}" = true ]; then
+                    warn "Accepting in non-interactive mode (--skip-validation)."
+                    return 0
+                fi
+                error "Invalid format in non-interactive mode. Use --skip-validation to override."
+                return 1
             fi
             ;;
         VIRUSTOTAL_API_KEY)
@@ -130,8 +138,12 @@ validate_format() {
                     [[ "${override}" =~ ^[Yy] ]] && return 0
                     return 1
                 fi
-                warn "Accepting in non-interactive mode."
-                return 0
+                if [ "${SKIP_VALIDATION}" = true ]; then
+                    warn "Accepting in non-interactive mode (--skip-validation)."
+                    return 0
+                fi
+                error "Invalid format in non-interactive mode. Use --skip-validation to override."
+                return 1
             fi
             ;;
         CLOUDFLARE_TOKEN)
@@ -142,8 +154,12 @@ validate_format() {
                     [[ "${override}" =~ ^[Yy] ]] && return 0
                     return 1
                 fi
-                warn "Accepting in non-interactive mode."
-                return 0
+                if [ "${SKIP_VALIDATION}" = true ]; then
+                    warn "Accepting in non-interactive mode (--skip-validation)."
+                    return 0
+                fi
+                error "Invalid format in non-interactive mode. Use --skip-validation to override."
+                return 1
             fi
             ;;
         TELEGRAM_BOT_TOKEN)
@@ -154,8 +170,12 @@ validate_format() {
                     [[ "${override}" =~ ^[Yy] ]] && return 0
                     return 1
                 fi
-                warn "Accepting in non-interactive mode."
-                return 0
+                if [ "${SKIP_VALIDATION}" = true ]; then
+                    warn "Accepting in non-interactive mode (--skip-validation)."
+                    return 0
+                fi
+                error "Invalid format in non-interactive mode. Use --skip-validation to override."
+                return 1
             fi
             ;;
         TS_AUTHKEY)
@@ -166,8 +186,12 @@ validate_format() {
                     [[ "${override}" =~ ^[Yy] ]] && return 0
                     return 1
                 fi
-                warn "Accepting in non-interactive mode."
-                return 0
+                if [ "${SKIP_VALIDATION}" = true ]; then
+                    warn "Accepting in non-interactive mode (--skip-validation)."
+                    return 0
+                fi
+                error "Invalid format in non-interactive mode. Use --skip-validation to override."
+                return 1
             fi
             ;;
     esac
@@ -370,7 +394,7 @@ try:
     if not key:
         key = cfg.get('providers',{}).get('anthropic',{}).get('apiKey','')
     print(key)
-except: pass
+except Exception: pass
 " "${OPENCLAW_JSON}" 2>/dev/null) || true
         [ -n "${ANTHROPIC_API_KEY}" ] && info "Loaded Anthropic API key from openclaw.json"
     fi
@@ -383,7 +407,7 @@ try:
     # 2026.x: "token"; legacy: "botToken"
     t = cfg.get('channels',{}).get('telegram',{})
     print(t.get('token','') or t.get('botToken',''))
-except: pass
+except Exception: pass
 " "${OPENCLAW_JSON}" 2>/dev/null) || true
         [ -n "${TELEGRAM_BOT_TOKEN}" ] && info "Loaded Telegram bot token from openclaw.json"
     fi
@@ -534,7 +558,8 @@ header "Step 6/9 — Write openclaw.json"
 OPENCLAW_JSON="${CONFIG_DIR}/openclaw.json"
 
 if [ -f "${OPENCLAW_JSON}" ]; then
-    info "Removing existing config (will regenerate from .env): ${OPENCLAW_JSON}"
+    info "Backing up existing config: ${OPENCLAW_JSON} -> ${OPENCLAW_JSON}.bak"
+    cp "${OPENCLAW_JSON}" "${OPENCLAW_JSON}.bak"
     rm -f "${OPENCLAW_JSON}"
 fi
 
@@ -548,6 +573,7 @@ LITELLM_MASTER_KEY="${LITELLM_MASTER_KEY}" \
 OPENCLAW_JSON_PATH="${OPENCLAW_JSON}" \
 OPENCLAW_GATEWAY_TOKEN="${OPENCLAW_GATEWAY_TOKEN}" \
 TS_HOSTNAME="${TS_HOSTNAME:-openclaw}" \
+OPENCLAW_VERSION="${OPENCLAW_VERSION}" \
 python3 << 'PYEOF'
 import json, os, secrets
 from datetime import datetime, timezone
@@ -557,17 +583,18 @@ litellm_key  = os.environ.get("LITELLM_MASTER_KEY", "sk-opendeclawed-internal")
 ingress_mode = os.environ.get("INGRESS_MODE", "local")
 gateway_token = os.environ.get("OPENCLAW_GATEWAY_TOKEN", secrets.token_hex(24))
 ts_hostname  = os.environ.get("TS_HOSTNAME", "openclaw")
+oc_version   = os.environ.get("OPENCLAW_VERSION", "2026.2.14")
 
 now = datetime.now(timezone.utc).isoformat()
 
 config = {
     "meta": {
-        "lastTouchedVersion": "2026.2.14",
+        "lastTouchedVersion": oc_version,
         "lastTouchedAt": now
     },
     "wizard": {
         "lastRunAt": now,
-        "lastRunVersion": "2026.2.14",
+        "lastRunVersion": oc_version,
         "lastRunCommand": "onboard",
         "lastRunMode": "local"
     },
@@ -660,7 +687,7 @@ config = {
             "mode": "token",
             "token": gateway_token
         },
-        "trustedProxies": ["172.28.0.0/24", "172.17.0.0/16", "192.168.65.0/24"],
+        "trustedProxies": ["172.28.0.0/24", "172.17.0.0/24", "192.168.65.0/24"],
         "tailscale": {
             "mode": "serve" if ingress_mode == "tailscale" else "off",
             "resetOnExit": False
@@ -786,6 +813,25 @@ PROFILES=()
 LITELLM_CONFIG="${REPO_DIR}/litellm_config.yaml"
 LITELLM_PORT="${LITELLM_PORT:-4000}"
 
+write_litellm=true
+if [ -f "${LITELLM_CONFIG}" ]; then
+    if [ "${INTERACTIVE}" != true ]; then
+        warn "Backing up existing litellm_config.yaml to litellm_config.yaml.bak"
+        cp "${LITELLM_CONFIG}" "${LITELLM_CONFIG}.bak"
+    else
+        warn "litellm_config.yaml already exists."
+        read -rp "  Overwrite? (existing backed up to .bak) [y/N]: " overwrite_litellm
+        if [[ ! "${overwrite_litellm}" =~ ^[Yy] ]]; then
+            info "Keeping existing litellm_config.yaml"
+            write_litellm=false
+        else
+            cp "${LITELLM_CONFIG}" "${LITELLM_CONFIG}.bak"
+            info "Backed up to litellm_config.yaml.bak"
+        fi
+    fi
+fi
+
+if [ "${write_litellm}" = true ]; then
 cat > "${LITELLM_CONFIG}" << 'LITELLMEOF'
 # LiteLLM Proxy configuration — generated by setup.sh
 # Edit this file to add/change LLM backends without modifying openclaw.json.
@@ -826,8 +872,8 @@ model_list:
 # ANTHROPIC_API_KEY is set via env var (docker-compose.yml).
 # Do NOT set keys in general_settings — LiteLLM doesn't expand ${} in YAML.
 LITELLMEOF
-
 info "Written: ${LITELLM_CONFIG}"
+fi
 save_env LITELLM_PORT "${LITELLM_PORT}"
 
 # ── Populate blocky DNS config volume ──
@@ -911,7 +957,7 @@ if docker image inspect "${OPENCLAW_IMAGE}" >/dev/null 2>&1; then
     # Wait for gateway to be healthy (healthcheck: curl /health)
     printf "  Waiting for gateway health"
     CLI_AUTOPAIR_SKIP=""
-    for i in $(seq 1 30); do
+    for ((i=1; i<=30; i++)); do
         if docker exec opendeclawed-gateway curl -sf http://127.0.0.1:${GATEWAY_PORT:-18789}/health >/dev/null 2>&1; then
             echo " ready."
             break
@@ -936,7 +982,7 @@ if docker image inspect "${OPENCLAW_IMAGE}" >/dev/null 2>&1; then
         PENDING_FILE="${CONFIG_DIR}/devices/pending.json"
         PAIRED_FILE="${CONFIG_DIR}/devices/paired.json"
 
-        for i in $(seq 1 15); do
+        for ((i=1; i<=15; i++)); do
             if [ -f "${PENDING_FILE}" ] && \
                python3 -c "
 import json, sys

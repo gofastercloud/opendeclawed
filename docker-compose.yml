@@ -128,7 +128,7 @@ services:
     restart: unless-stopped
     entrypoint: |
       /bin/sh -c '
-        apk add --no-cache iptables ip6tables
+        apk add --no-cache iptables ip6tables || { echo "FATAL: Cannot install iptables"; exit 1; }
 
         GATEWAY_IP="$${GATEWAY_IP:-172.17.0.1}"
         EGRESS_SUBNET="$${EGRESS_SUBNET:-172.28.0.0/24}"
@@ -136,61 +136,94 @@ services:
         BLOCKY_IP="$${BLOCKY_IP:-172.27.0.53}"
 
         install_rules() {
-            # Check if our rules are already present (idempotent)
-            if iptables -C DOCKER-USER -d 10.0.0.0/8 -j DROP 2>/dev/null; then
+            # Multi-sentinel check: verify 3 rules to confirm full ruleset is present
+            if iptables -C DOCKER-USER -d 10.0.0.0/8 -j DROP 2>/dev/null && \
+               iptables -C DOCKER-USER -d 192.168.0.0/16 -j DROP 2>/dev/null && \
+               iptables -C DOCKER-USER -d 169.254.0.0/16 -j DROP 2>/dev/null; then
                 return 0
             fi
 
-            echo "[$(date -u +%H:%M:%S)] Installing egress firewall rules..."
+            echo "[$(date -u +%H:%M:%S)] Installing iptables rules (atomic swap)..."
 
+            # --- IPv4: Build rules in temporary chain ---
             iptables -N DOCKER-USER 2>/dev/null || true
-            ip6tables -N DOCKER-USER 2>/dev/null || true
-            iptables -F DOCKER-USER 2>/dev/null || true
-            ip6tables -F DOCKER-USER 2>/dev/null || true
+            iptables -N DOCKER-USER-NEW 2>/dev/null || iptables -F DOCKER-USER-NEW
 
             # STATEFUL: Accept established/related
-            iptables -I DOCKER-USER 1 -m state --state ESTABLISHED,RELATED -j ACCEPT
-            ip6tables -I DOCKER-USER 1 -m state --state ESTABLISHED,RELATED -j ACCEPT
+            iptables -A DOCKER-USER-NEW -m state --state ESTABLISHED,RELATED -j ACCEPT
 
             # ALLOW DNS to blocky only (Fix #3)
-            iptables -I DOCKER-USER 2 -p udp --dport 53 -d $BLOCKY_IP -j ACCEPT
-            iptables -I DOCKER-USER 3 -p tcp --dport 53 -d $BLOCKY_IP -j ACCEPT
-            iptables -I DOCKER-USER 4 -p udp --dport 53 -d 127.0.0.11 -j ACCEPT
-            iptables -I DOCKER-USER 5 -p tcp --dport 53 -d 127.0.0.11 -j ACCEPT
-            ip6tables -I DOCKER-USER 2 -p udp --dport 53 -j ACCEPT
-            ip6tables -I DOCKER-USER 3 -p tcp --dport 53 -j ACCEPT
+            iptables -A DOCKER-USER-NEW -p udp --dport 53 -d $BLOCKY_IP -j ACCEPT
+            iptables -A DOCKER-USER-NEW -p tcp --dport 53 -d $BLOCKY_IP -j ACCEPT
+            iptables -A DOCKER-USER-NEW -p udp --dport 53 -d 127.0.0.11 -j ACCEPT
+            iptables -A DOCKER-USER-NEW -p tcp --dport 53 -d 127.0.0.11 -j ACCEPT
 
-            # ALLOW inter-container (openclaw-egress)
-            iptables -I DOCKER-USER 6 -d $EGRESS_SUBNET -j ACCEPT
-            iptables -I DOCKER-USER 7 -s $EGRESS_SUBNET -j ACCEPT
+            # ALLOW specific inter-container traffic (openclaw-internal)
+            iptables -A DOCKER-USER-NEW -s $INTERNAL_SUBNET -d $INTERNAL_SUBNET -p tcp --dport 4000 -j ACCEPT    # Gateway->LiteLLM, Blocky HTTP API
+            iptables -A DOCKER-USER-NEW -s $INTERNAL_SUBNET -d $INTERNAL_SUBNET -p tcp --dport 2375 -j ACCEPT    # Watchtower/Dozzle->Socket-proxy
+            iptables -A DOCKER-USER-NEW -s $INTERNAL_SUBNET -d $INTERNAL_SUBNET -p tcp --dport $${GATEWAY_PORT:-18789} -j ACCEPT  # Cloudflared/Tailscale->Gateway
+            iptables -A DOCKER-USER-NEW -s $INTERNAL_SUBNET -d $INTERNAL_SUBNET -p icmp -j ACCEPT                # Health checks
 
-            # ALLOW inter-container (openclaw-internal)
-            iptables -I DOCKER-USER 8 -d $INTERNAL_SUBNET -j ACCEPT
-            iptables -I DOCKER-USER 9 -s $INTERNAL_SUBNET -j ACCEPT
+            # ALLOW specific inter-container traffic (openclaw-egress)
+            iptables -A DOCKER-USER-NEW -s $EGRESS_SUBNET -d $EGRESS_SUBNET -p tcp --dport $${GATEWAY_PORT:-18789} -j ACCEPT
+            iptables -A DOCKER-USER-NEW -s $EGRESS_SUBNET -d $EGRESS_SUBNET -p tcp --dport 53 -j ACCEPT
+            iptables -A DOCKER-USER-NEW -s $EGRESS_SUBNET -d $EGRESS_SUBNET -p udp --dport 53 -j ACCEPT
+            iptables -A DOCKER-USER-NEW -s $EGRESS_SUBNET -d $EGRESS_SUBNET -p icmp -j ACCEPT
 
             # DROP gateway IP BEFORE Docker bridge ACCEPT (Fix #1)
-            iptables -I DOCKER-USER 10 -d $GATEWAY_IP -j DROP
+            iptables -A DOCKER-USER-NEW -d $GATEWAY_IP -j DROP
 
             # ALLOW Docker bridge (narrowed to /24 — Fix #1)
-            iptables -I DOCKER-USER 11 -d 172.17.0.0/24 -j ACCEPT
-            iptables -I DOCKER-USER 12 -s 172.17.0.0/24 -j ACCEPT
+            iptables -A DOCKER-USER-NEW -d 172.17.0.0/24 -j ACCEPT
+            iptables -A DOCKER-USER-NEW -s 172.17.0.0/24 -j ACCEPT
 
             # DROP RFC1918
-            iptables -A DOCKER-USER -d 10.0.0.0/8 -j DROP
-            iptables -A DOCKER-USER -d 192.168.0.0/16 -j DROP
-            iptables -A DOCKER-USER -d 172.16.0.0/12 -j DROP
+            iptables -A DOCKER-USER-NEW -d 10.0.0.0/8 -j DROP
+            iptables -A DOCKER-USER-NEW -d 192.168.0.0/16 -j DROP
+            iptables -A DOCKER-USER-NEW -d 172.16.0.0/12 -j DROP
 
             # DROP link-local, multicast, reserved
-            iptables -A DOCKER-USER -d 169.254.0.0/16 -j DROP
-            iptables -A DOCKER-USER -d 224.0.0.0/4 -j DROP
-            iptables -A DOCKER-USER -d 240.0.0.0/4 -j DROP
+            iptables -A DOCKER-USER-NEW -d 169.254.0.0/16 -j DROP
+            iptables -A DOCKER-USER-NEW -d 224.0.0.0/4 -j DROP
+            iptables -A DOCKER-USER-NEW -d 240.0.0.0/4 -j DROP
 
-            # IPv6
-            ip6tables -A DOCKER-USER -d fc00::/7 -j DROP
-            ip6tables -A DOCKER-USER -d fe80::/10 -j DROP
-            ip6tables -A DOCKER-USER -d ff00::/8 -j DROP
+            # Default pass-through (must be last)
+            iptables -A DOCKER-USER-NEW -j RETURN
 
-            echo "[$(date -u +%H:%M:%S)] Egress firewall rules installed"
+            # Atomic swap: rename chains
+            iptables -E DOCKER-USER DOCKER-USER-OLD 2>/dev/null || true
+            iptables -E DOCKER-USER-NEW DOCKER-USER
+            iptables -F DOCKER-USER-OLD 2>/dev/null || true
+            iptables -X DOCKER-USER-OLD 2>/dev/null || true
+
+            # --- IPv6: Build rules in temporary chain ---
+            # DROP all IPv6 DNS — blocky only listens on IPv4, so IPv6 DNS
+            # would bypass filtering entirely
+            ip6tables -N DOCKER-USER 2>/dev/null || true
+            ip6tables -N DOCKER-USER-NEW 2>/dev/null || ip6tables -F DOCKER-USER-NEW
+
+            # STATEFUL: Accept established/related
+            ip6tables -A DOCKER-USER-NEW -m state --state ESTABLISHED,RELATED -j ACCEPT
+
+            # DROP IPv6 DNS (blocky listens on IPv4 only; IPv6 DNS bypasses filtering)
+            ip6tables -A DOCKER-USER-NEW -p udp --dport 53 -j DROP
+            ip6tables -A DOCKER-USER-NEW -p tcp --dport 53 -j DROP
+
+            # DROP IPv6 private/link-local/multicast
+            ip6tables -A DOCKER-USER-NEW -d fc00::/7 -j DROP
+            ip6tables -A DOCKER-USER-NEW -d fe80::/10 -j DROP
+            ip6tables -A DOCKER-USER-NEW -d ff00::/8 -j DROP
+
+            # Default pass-through (must be last)
+            ip6tables -A DOCKER-USER-NEW -j RETURN
+
+            # Atomic swap: rename chains
+            ip6tables -E DOCKER-USER DOCKER-USER-OLD 2>/dev/null || true
+            ip6tables -E DOCKER-USER-NEW DOCKER-USER
+            ip6tables -F DOCKER-USER-OLD 2>/dev/null || true
+            ip6tables -X DOCKER-USER-OLD 2>/dev/null || true
+
+            echo "[$(date -u +%H:%M:%S)] Egress firewall rules installed (atomic swap)"
         }
 
         # Install immediately, then re-check every 5s (Fix #4)
@@ -201,7 +234,7 @@ services:
         done
       '
     healthcheck:
-      test: ["CMD-SHELL", "iptables -C DOCKER-USER -d 10.0.0.0/8 -j DROP 2>/dev/null"]
+      test: ["CMD-SHELL", "iptables -C DOCKER-USER -d 10.0.0.0/8 -j DROP 2>/dev/null && ip6tables -C DOCKER-USER -p udp --dport 53 -j DROP 2>/dev/null"]
       interval: 10s
       timeout: 5s
       retries: 6
@@ -273,6 +306,8 @@ services:
     depends_on:
       egress-firewall:
         condition: service_healthy
+      blocky:
+        condition: service_healthy
 
   # -------------------------------------------------------------------
   # OPENCLAW-GATEWAY: API server orchestrating LLM backends
@@ -322,7 +357,8 @@ services:
       - ${OPENCLAW_CONFIG_DIR:-~/.openclaw}:/home/node/.openclaw:rw
       - ${OPENCLAW_WORKSPACE_DIR:-~/.openclaw/workspace}:/home/node/.openclaw/workspace:rw
     tmpfs:
-      - /tmp:size=2g,noexec,nosuid,nodev
+      # 512m: covers Node.js temp files, no large file processing expected
+      - /tmp:size=512m,noexec,nosuid,nodev
       - /run:size=512m,noexec,nosuid,nodev
       - /app/.cache:size=256m,noexec,nosuid,nodev
       - /home/node/.npm:size=128m,noexec,nosuid,nodev
@@ -331,7 +367,7 @@ services:
       - OPENCLAW_GATEWAY_TOKEN=${OPENCLAW_GATEWAY_TOKEN:-}
       - LITELLM_HOST=litellm
       - LITELLM_PORT=${LITELLM_PORT:-4000}
-      - LITELLM_API_KEY=${LITELLM_MASTER_KEY:-sk-opendeclawed-internal}
+      - LITELLM_API_KEY=${LITELLM_MASTER_KEY:?LITELLM_MASTER_KEY must be set - run setup.sh}
       - GATEWAY_PORT=${GATEWAY_PORT:-18789}
       - LOG_LEVEL=${LOG_LEVEL:-info}
     deploy:
@@ -360,7 +396,7 @@ services:
       litellm:
         condition: service_healthy
       blocky:
-        condition: service_started
+        condition: service_healthy
 
   # -------------------------------------------------------------------
   # CLOUDFLARED: Cloudflare Tunnel ingress (optional, profile: tunnel)
@@ -386,7 +422,7 @@ services:
   #  - CLOUDFLARE_TUNNEL_ROUTE: Hostname to route (e.g., openclaw.example.com)
   cloudflared:
     <<: *hardened-defaults
-    image: "${CLOUDFLARED_IMAGE:-cloudflare/cloudflared:2024.1.1}"
+    image: "${CLOUDFLARED_IMAGE:-cloudflare/cloudflared:2025.2.0}"
     container_name: opendeclawed-cloudflared
     profiles:
       - tunnel
@@ -620,7 +656,7 @@ services:
         ipv4_address: "${BLOCKY_IP:-172.27.0.53}"
       openclaw-egress: {}
     volumes:
-      - blocky-config:/app/config:ro
+      - ./examples/blocky-config.yml:/app/config/config.yml:ro
     tmpfs:
       - /tmp:size=64m,noexec,nosuid,nodev
     deploy:
@@ -634,6 +670,7 @@ services:
       - NET_BIND_SERVICE
     user: "65534:65534"
     healthcheck:
+      # Note: port 4000 is Blocky's internal HTTP API, independent of LiteLLM's port 4000
       test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:4000/api/blocking/status || exit 1"]
       interval: 30s
       timeout: 5s
@@ -730,8 +767,9 @@ services:
       - DOZZLE_FILTER=name=opendeclawed-*
       - DOZZLE_NO_ANALYTICS=true
       - DOZZLE_BASE=/dozzle
-    # NOTE: dns directive omitted -- Dozzle needs Docker's embedded DNS (127.0.0.11)
-    # to resolve docker-socket-proxy. Blocky DNS would break service discovery.
+    dns:
+      - "${BLOCKY_IP:-172.27.0.53}"
+      - 127.0.0.11  # Docker embedded DNS fallback for service discovery
     tmpfs:
       - /tmp:size=32m,noexec,nosuid,nodev
     ports:
@@ -844,12 +882,6 @@ networks:
         - subnet: "${EGRESS_SUBNET:-172.28.0.0/24}"
 
 volumes:
-  # -------------------------------------------------------------------
-  # BLOCKY-CONFIG: DNS firewall configuration
-  # -------------------------------------------------------------------
-  blocky-config:
-    driver: local
-
   # -------------------------------------------------------------------
   # TAILSCALE-STATE: Persistent Tailscale auth state
   # -------------------------------------------------------------------

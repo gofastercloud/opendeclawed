@@ -21,6 +21,9 @@ fi
 # ── Bind Ollama to all interfaces ──────────────────────────────────────
 # Required so LiteLLM inside Docker can reach Ollama via host.docker.internal.
 # By default Ollama only listens on 127.0.0.1, which is unreachable from containers.
+# WARNING: Binding to 0.0.0.0 exposes Ollama to ALL network interfaces.
+# On macOS behind NAT this is typically safe, but on a VPS or cloud host
+# ensure a firewall blocks external access to port 11434.
 export OLLAMA_HOST=0.0.0.0
 
 # Persist for macOS launchd (survives terminal close / reboot)

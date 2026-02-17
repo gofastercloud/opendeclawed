@@ -8,7 +8,6 @@ exclude_paths:
   - examples/openclaw.example.json
   - docs/prerequisites.md
   - docs/setup-guide.md
-  - docs/blog-post-draft.md
   - CONTRIBUTING.md
   - README.md
 

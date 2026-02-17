@@ -3,7 +3,7 @@
 # Run manually: pre-commit run --all-files
 repos:
   - repo: https://github.com/trufflesecurity/trufflehog
-    rev: v3.88.0
+    rev: v3.93.0
     hooks:
       - id: trufflehog
         name: TruffleHog — secrets detection
