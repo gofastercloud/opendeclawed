@@ -31,7 +31,7 @@ This document details the security hardening mechanisms in OpenDeclawed. The dep
 | Container reach host via gateway IP | Explicit DROP rule for 172.17.0.1 | Critical |
 | Docker socket as root escalation | docker-socket-proxy (tecnativa) with least-privilege API filtering for Watchtower | Critical |
 | LLM backend direct internet access | Internal network isolation (internal: true) | High |
-| DNS exfiltration / C2 callbacks | blocky DNS firewall with threat blocklists (malware, phishing, cryptomining) + DoH upstream | High |
+| DNS exfiltration / C2 callbacks | blocky DNS firewall with threat blocklists + port 53 locked to Blocky only + DoH resolver IPs blocked | High |
 | Malicious skill installation | safe-install pipeline: static analysis → VirusTotal → allowlist → local archive install (TOCTOU-safe) | High |
 | Skill archive path traversal | Zip-slip protection: pre-extraction path validation, reject `../` and absolute paths | High |
 | Model file tampering | Models managed by Ollama or external backend; not mounted into containers | High |
@@ -300,21 +300,37 @@ docker0 (host bridge)
 
 Use non-overlapping ranges to avoid conflicts.
 
-### DNS Resolution
+### DNS Resolution & Bypass Prevention
 
-Both networks allow DNS queries (:53 udp/tcp):
+DNS is restricted to two allowed destinations:
 
 ```bash
-iptables -I DOCKER-USER 2 -p udp --dport 53 -j ACCEPT
-iptables -I DOCKER-USER 3 -p tcp --dport 53 -j ACCEPT
+# Only Blocky (172.27.0.53) and Docker's internal resolver (127.0.0.11)
+iptables -A DOCKER-USER -p udp --dport 53 -d 172.27.0.53 -j ACCEPT
+iptables -A DOCKER-USER -p tcp --dport 53 -d 172.27.0.53 -j ACCEPT
+iptables -A DOCKER-USER -p udp --dport 53 -d 127.0.0.11 -j ACCEPT
+iptables -A DOCKER-USER -p tcp --dport 53 -d 127.0.0.11 -j ACCEPT
+# All other DNS traffic is dropped
+iptables -A DOCKER-USER -p udp --dport 53 -j DROP
+iptables -A DOCKER-USER -p tcp --dport 53 -j DROP
 ```
 
-**Why allow DNS?**
-- Containers need to resolve service names (litellm, blocky)
-- External APIs need hostname resolution
-- Critical for container operation
+**Why restrict DNS?**
+- Containers must use Blocky for DNS, which applies threat blocklists (malware, phishing, cryptomining)
+- Unrestricted port 53 access would let a compromised container bypass Blocky entirely
+- Docker's 127.0.0.11 resolver is allowed for container name resolution
 
-**Note**: Egress firewall only controls outbound. DNS responses are allowed via ESTABLISHED state.
+**DNS-over-HTTPS (DoH) prevention:**
+
+Well-known public DNS resolvers are blocked on all ports to prevent DoH bypass:
+- Google: 8.8.8.8, 8.8.4.4
+- Cloudflare: 1.1.1.1, 1.0.0.1
+- Quad9: 9.9.9.9, 149.112.112.112
+- OpenDNS: 208.67.222.222, 208.67.220.220
+- AdGuard: 94.140.14.14, 94.140.15.15
+- Control D: 76.76.2.0, 76.76.10.0
+
+**Note**: DoH to non-blocked resolvers remains a theoretical bypass vector. Blocky itself uses DoH upstream for its own resolution (via the egress network).
 
 ## Access Control
 
