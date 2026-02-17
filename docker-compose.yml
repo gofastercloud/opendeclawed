@@ -7,43 +7,43 @@
 #
 # Security Architecture:
 #
-#  ┌─────────────────────────────────────────────────────────────────────┐
-#  │                      CLOUDFLARE TUNNEL (Optional)                   │
-#  │                     Profile: "tunnel" (opt-in)                      │
-#  │                        cloudflared ←→ Tunnel                        │
-#  └────────────────────────────┬────────────────────────────────────────┘
-#                               │
-#  ┌────────────────────────────▼────────────────────────────────────────┐
-#  │                       opendeclawed-gateway                         │
-#  │  (REST API, WebSocket, health checks)                              │
-#  │  Networks: opendeclawed-internal + opendeclawed-egress             │
-#  │  Hardening: drop all caps, no_new_privileges, user 1000:1000       │
-#  │  Healthcheck: curl -sf http://127.0.0.1:18789/health              │
-#  └────────────────────────────┬────────────────────────────────────────┘
-#                               │
-#  ┌────────────────────────────▼────────────────────────────────────────┐
-#  │                       opendeclawed-litellm                         │
-#  │  OpenAI-compatible proxy — single /v1 endpoint for all backends    │
-#  │  Routes chat → llama-chat / MLX / Ollama / cloud                   │
-#  │  Routes embed → llama-embed / MLX / any embedding endpoint         │
-#  │  Internal-only network, all LLM call logs visible in Dozzle        │
-#  └────────────────────────────┬────────────────────────────────────────┘
-#                               │
-#       ┌───────────────────────┴───────────────────────┐
-#       │                                               │
-#  ┌────▼──────────────────┐               ┌──────────▼────┐
-#  │   llama-embed         │               │   llama-chat  │
-#  │ (embedding model)     │               │ (chat model)  │
-#  │ Internal-only network │               │ Internal-only │
-#  │ cap: drop ALL         │               │ cap: drop ALL │
-#  └───────────────────────┘               └───────────────┘
+#  +---------------------------------------------------------------------+
+#  |                      CLOUDFLARE TUNNEL (Optional)                    |
+#  |                     Profile: "tunnel" (opt-in)                      |
+#  |                        cloudflared <-> Tunnel                       |
+#  +-----------------------------+---------------------------------------+
+#                                |
+#  +-----------------------------v---------------------------------------+
+#  |                       opendeclawed-gateway                          |
+#  |  (REST API, WebSocket, health checks)                               |
+#  |  Networks: opendeclawed-internal + opendeclawed-egress              |
+#  |  Hardening: drop all caps, no_new_privileges, user 1000:1000        |
+#  |  Healthcheck: curl -sf http://127.0.0.1:18789/health               |
+#  +-----------------------------+---------------------------------------+
+#                                |
+#  +-----------------------------v---------------------------------------+
+#  |                       opendeclawed-litellm                          |
+#  |  OpenAI-compatible proxy -- single /v1 endpoint for all backends    |
+#  |  Routes chat -> llama-chat / MLX / Ollama / cloud                   |
+#  |  Routes embed -> llama-embed / MLX / any embedding endpoint         |
+#  |  Internal-only network, all LLM call logs visible in Dozzle         |
+#  +-----------------------------+---------------------------------------+
+#                                |
+#       +------------------------+------------------------+
+#       |                                                 |
+#  +----v-------------------+               +-------------v---+
+#  |   llama-embed          |               |   llama-chat    |
+#  | (embedding model)      |               | (chat model)    |
+#  | Internal-only network  |               | Internal-only   |
+#  | cap: drop ALL          |               | cap: drop ALL   |
+#  +------------------------+               +-----------------+
 #
-#  ┌─────────────────────────────────────────────────────────────────────┐
-#  │                       EGRESS FIREWALL (Init)                        │
-#  │  DOCKER-USER iptables chain: DROP RFC1918, enforces egress control │
-#  │  Allows: established/related, DNS, inter-container, Docker bridge  │
-#  │  Blocks: 10.0.0.0/8, 192.168.0.0/16, 169.254.0.0/16, multicast    │
-#  └─────────────────────────────────────────────────────────────────────┘
+#  +---------------------------------------------------------------------+
+#  |                       EGRESS FIREWALL (Init)                         |
+#  |  DOCKER-USER iptables chain: DROP RFC1918, enforces egress control  |
+#  |  Allows: established/related, DNS, inter-container, Docker bridge   |
+#  |  Blocks: 10.0.0.0/8, 192.168.0.0/16, 169.254.0.0/16, multicast    |
+#  +---------------------------------------------------------------------+
 #
 # NETWORK ISOLATION:
 #  - opendeclawed-internal: bridge, internal=true (no internet access)
@@ -76,10 +76,26 @@
 #
 # ============================================================================
 
+# Fix #14: DRY anchor for hardened container defaults.
+# Applied to all services except egress-firewall (which needs NET_ADMIN/NET_RAW
+# and root). Services override individual keys as needed after the merge.
+x-hardened-defaults: &hardened-defaults
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+  ipc: private
+  restart: unless-stopped
+  logging:
+    driver: json-file
+    options:
+      max-size: 10m
+      max-file: "3"
+
 services:
-  # ─────────────────────────────────────────────────────────────────────
+  # -------------------------------------------------------------------
   # EGRESS FIREWALL: Kernel-level egress control via iptables
-  # ─────────────────────────────────────────────────────────────────────
+  # -------------------------------------------------------------------
   # Runs once at initialization to install DOCKER-USER rules that prevent
   # containers from reaching RFC1918 private networks and other restricted
   # ranges. This is the foundational security layer for all outbound traffic.
@@ -90,15 +106,15 @@ services:
   #  - DROP to 169.254.0.0/16 (link-local)
   #  - DROP to 224.0.0.0/4 (multicast)
   #  - DROP to 240.0.0.0/4 (reserved)
-  #  - DROP to gateway IP (prevents container→host bypass)
+  #  - DROP to gateway IP (prevents container->host bypass)
   #  - ACCEPT established/related connections (stateful)
-  #  - ACCEPT DNS on :53 (required for container operation)
+  #  - ACCEPT DNS on :53 to blocky IP only (required for container operation)
   #  - ACCEPT to openclaw-egress network (inter-container)
   #  - ACCEPT to docker0 bridge (Docker infrastructure)
   # SECURITY NOTE: This container runs as a PERSISTENT SIDECAR (not init).
-  # It re-checks and re-installs rules every 60s, surviving Docker daemon
+  # It re-checks and re-installs rules every 5s, surviving Docker daemon
   # restarts. If Docker restarts, containers come back via restart: unless-stopped
-  # but DOCKER-USER rules are flushed. The loop catches this within 60s.
+  # but DOCKER-USER rules are flushed. The loop catches this within 5s.
   egress-firewall:
     image: "${ALPINE_IMAGE:-alpine:3.19}"
     container_name: opendeclawed-egress-firewall
@@ -122,6 +138,7 @@ services:
         GATEWAY_IP="$${GATEWAY_IP:-172.17.0.1}"
         EGRESS_SUBNET="$${EGRESS_SUBNET:-172.28.0.0/24}"
         INTERNAL_SUBNET="$${INTERNAL_SUBNET:-172.27.0.0/24}"
+        BLOCKY_IP="$${BLOCKY_IP:-172.27.0.53}"
 
         install_rules() {
             # Check if our rules are already present (idempotent)
@@ -140,34 +157,38 @@ services:
             iptables -I DOCKER-USER 1 -m state --state ESTABLISHED,RELATED -j ACCEPT
             ip6tables -I DOCKER-USER 1 -m state --state ESTABLISHED,RELATED -j ACCEPT
 
-            # ALLOW DNS
-            iptables -I DOCKER-USER 2 -p udp --dport 53 -j ACCEPT
-            iptables -I DOCKER-USER 3 -p tcp --dport 53 -j ACCEPT
+            # ALLOW DNS to blocky only (Fix #3)
+            iptables -I DOCKER-USER 2 -p udp --dport 53 -d $BLOCKY_IP -j ACCEPT
+            iptables -I DOCKER-USER 3 -p tcp --dport 53 -d $BLOCKY_IP -j ACCEPT
+            iptables -I DOCKER-USER 4 -p udp --dport 53 -d 127.0.0.11 -j ACCEPT
+            iptables -I DOCKER-USER 5 -p tcp --dport 53 -d 127.0.0.11 -j ACCEPT
             ip6tables -I DOCKER-USER 2 -p udp --dport 53 -j ACCEPT
             ip6tables -I DOCKER-USER 3 -p tcp --dport 53 -j ACCEPT
 
             # ALLOW inter-container (openclaw-egress)
-            iptables -I DOCKER-USER 4 -d $EGRESS_SUBNET -j ACCEPT
-            iptables -I DOCKER-USER 5 -s $EGRESS_SUBNET -j ACCEPT
+            iptables -I DOCKER-USER 6 -d $EGRESS_SUBNET -j ACCEPT
+            iptables -I DOCKER-USER 7 -s $EGRESS_SUBNET -j ACCEPT
 
             # ALLOW inter-container (openclaw-internal)
-            iptables -I DOCKER-USER 6 -d $INTERNAL_SUBNET -j ACCEPT
-            iptables -I DOCKER-USER 7 -s $INTERNAL_SUBNET -j ACCEPT
+            iptables -I DOCKER-USER 8 -d $INTERNAL_SUBNET -j ACCEPT
+            iptables -I DOCKER-USER 9 -s $INTERNAL_SUBNET -j ACCEPT
 
-            # ALLOW Docker bridge
-            iptables -I DOCKER-USER 8 -d 172.17.0.0/16 -j ACCEPT
-            iptables -I DOCKER-USER 9 -s 172.17.0.0/16 -j ACCEPT
+            # DROP gateway IP BEFORE Docker bridge ACCEPT (Fix #1)
+            iptables -I DOCKER-USER 10 -d $GATEWAY_IP -j DROP
+
+            # ALLOW Docker bridge (narrowed to /24 — Fix #1)
+            iptables -I DOCKER-USER 11 -d 172.17.0.0/24 -j ACCEPT
+            iptables -I DOCKER-USER 12 -s 172.17.0.0/24 -j ACCEPT
 
             # DROP RFC1918
             iptables -A DOCKER-USER -d 10.0.0.0/8 -j DROP
             iptables -A DOCKER-USER -d 192.168.0.0/16 -j DROP
             iptables -A DOCKER-USER -d 172.16.0.0/12 -j DROP
 
-            # DROP link-local, multicast, reserved, gateway
+            # DROP link-local, multicast, reserved
             iptables -A DOCKER-USER -d 169.254.0.0/16 -j DROP
             iptables -A DOCKER-USER -d 224.0.0.0/4 -j DROP
             iptables -A DOCKER-USER -d 240.0.0.0/4 -j DROP
-            iptables -A DOCKER-USER -d $GATEWAY_IP -j DROP
 
             # IPv6
             ip6tables -A DOCKER-USER -d fc00::/7 -j DROP
@@ -177,13 +198,19 @@ services:
             echo "[$(date -u +%H:%M:%S)] Egress firewall rules installed"
         }
 
-        # Install immediately, then re-check every 60s
+        # Install immediately, then re-check every 5s (Fix #4)
         install_rules
         while true; do
-            sleep 60
+            sleep 5
             install_rules
         done
       '
+    healthcheck:
+      test: ["CMD-SHELL", "iptables -C DOCKER-USER -d 10.0.0.0/8 -j DROP 2>/dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 15s
     deploy:
       resources:
         limits:
@@ -194,11 +221,11 @@ services:
       driver: json-file
       options:
         max-size: 10m
-        max-file: 3
+        max-file: "3"
 
-  # ─────────────────────────────────────────────────────────────────────
+  # -------------------------------------------------------------------
   # LLAMA-EMBED: Embedding model server (internal network only)
-  # ─────────────────────────────────────────────────────────────────────
+  # -------------------------------------------------------------------
   # Runs llama.cpp embedding server. Isolated to internal network
   # (no internet access). Provides EMBED_PORT:${EMBED_PORT:-8090} for
   # openclaw-gateway to call.
@@ -211,6 +238,7 @@ services:
   #  - IPC: private (no shared memory)
   #  - PID: private (isolated process namespace)
   llama-embed:
+    <<: *hardened-defaults
     image: "${LLAMA_IMAGE:-ghcr.io/ggml-org/llama.cpp:server}"
     # The official server image is amd64-only (arm64 CI broken since Apr 2025).
     # OrbStack uses Rosetta 2 for transparent emulation on Apple Silicon.
@@ -243,36 +271,26 @@ services:
           cpus: "${LLAMA_EMBED_CPUS_RESERVE:-1}"
           memory: "${LLAMA_EMBED_MEM_RESERVE:-1g}"
     read_only: true
-    security_opt:
-      - no-new-privileges:true
-    cap_drop:
-      - ALL
     user: "65534:65534"
-    ipc: private
     healthcheck:
-      test: ["CMD", "curl", "-sf", "http://127.0.0.1:${EMBED_PORT:-8090}/health"]
+      test: ["CMD-SHELL", "curl -sf http://127.0.0.1:${EMBED_PORT:-8090}/health || wget -qO- http://127.0.0.1:${EMBED_PORT:-8090}/health"]
       interval: 15s
       timeout: 5s
       retries: 5
       start_period: 60s
-    logging:
-      driver: json-file
-      options:
-        max-size: 10m
-        max-file: 3
-    restart: unless-stopped
     depends_on:
       egress-firewall:
-        condition: service_started
+        condition: service_healthy
 
-  # ─────────────────────────────────────────────────────────────────────
+  # -------------------------------------------------------------------
   # LLAMA-CHAT: Chat model server (internal network only)
-  # ─────────────────────────────────────────────────────────────────────
+  # -------------------------------------------------------------------
   # Runs llama.cpp chat completion server. Isolated to internal network.
   # Provides CHAT_PORT:${CHAT_PORT:-8091} for openclaw-gateway.
   #
   # Security: Same as llama-embed (see above).
   llama-chat:
+    <<: *hardened-defaults
     image: "${LLAMA_IMAGE:-ghcr.io/ggml-org/llama.cpp:server}"
     platform: "${LLAMA_PLATFORM:-linux/amd64}"
     container_name: opendeclawed-llama-chat
@@ -303,45 +321,35 @@ services:
           cpus: "${LLAMA_CHAT_CPUS_RESERVE:-2}"
           memory: "${LLAMA_CHAT_MEM_RESERVE:-2g}"
     read_only: true
-    security_opt:
-      - no-new-privileges:true
-    cap_drop:
-      - ALL
     user: "65534:65534"
-    ipc: private
     healthcheck:
-      test: ["CMD", "curl", "-sf", "http://127.0.0.1:${CHAT_PORT:-8091}/health"]
+      test: ["CMD-SHELL", "curl -sf http://127.0.0.1:${CHAT_PORT:-8091}/health || wget -qO- http://127.0.0.1:${CHAT_PORT:-8091}/health"]
       interval: 15s
       timeout: 5s
       retries: 5
       start_period: 60s
-    logging:
-      driver: json-file
-      options:
-        max-size: 10m
-        max-file: 3
-    restart: unless-stopped
     depends_on:
       egress-firewall:
-        condition: service_started
+        condition: service_healthy
 
-  # ─────────────────────────────────────────────────────────────────────
+  # -------------------------------------------------------------------
   # LITELLM: OpenAI-compatible LLM proxy/router
-  # ─────────────────────────────────────────────────────────────────────
+  # -------------------------------------------------------------------
   # Presents a single /v1/chat/completions and /v1/embeddings endpoint
   # to OpenClaw, abstracting the actual backend (llama.cpp containers,
   # MLX on host, Ollama, vLLM, etc.). Backend routing is defined in
-  # litellm_config.yaml — swap backends without changing openclaw.json.
+  # litellm_config.yaml -- swap backends without changing openclaw.json.
   #
   # Profile: always-on (core infrastructure)
   #
   # Security:
   #  - Internal network only (no internet access)
   #  - read-only root, all caps dropped, no_new_privileges
-  #  - Master key set to internal-only token (not exposed externally)
-  #  - No database (stateless proxy — logs to stdout for Dozzle)
+  #  - Master key must be set via environment (fails fast if missing)
+  #  - No database (stateless proxy -- logs to stdout for Dozzle)
   litellm:
-    image: "${LITELLM_IMAGE:-ghcr.io/berriai/litellm:main-stable}"
+    <<: *hardened-defaults
+    image: "${LITELLM_IMAGE:-ghcr.io/berriai/litellm:main-v1.63.2-stable}"
     container_name: opendeclawed-litellm
     command: ["--config", "/app/config.yaml", "--port", "${LITELLM_PORT:-4000}"]
     networks:
@@ -349,7 +357,7 @@ services:
     volumes:
       - ${LITELLM_CONFIG:-./litellm_config.yaml}:/app/config.yaml:ro
     environment:
-      - LITELLM_MASTER_KEY=${LITELLM_MASTER_KEY:-sk-opendeclawed-internal}
+      - LITELLM_MASTER_KEY=${LITELLM_MASTER_KEY:?LITELLM_MASTER_KEY must be set - run setup.sh}
       - LITELLM_LOG_LEVEL=${LOG_LEVEL:-info}
     deploy:
       resources:
@@ -363,31 +371,20 @@ services:
     read_only: true
     tmpfs:
       - /tmp:size=256m,noexec,nosuid,nodev
-    security_opt:
-      - no-new-privileges:true
-    cap_drop:
-      - ALL
     user: "65534:65534"
-    ipc: private
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:${LITELLM_PORT:-4000}/health/liveliness')"]
       interval: 15s
       timeout: 5s
       retries: 3
       start_period: 20s
-    logging:
-      driver: json-file
-      options:
-        max-size: 10m
-        max-file: 5
-    restart: unless-stopped
     depends_on:
       egress-firewall:
-        condition: service_started
+        condition: service_healthy
 
-  # ─────────────────────────────────────────────────────────────────────
+  # -------------------------------------------------------------------
   # OPENCLAW-GATEWAY: API server orchestrating LLM backends
-  # ─────────────────────────────────────────────────────────────────────
+  # -------------------------------------------------------------------
   # Central OpenClaw gateway service. Hosts REST API, WebSocket, and health
   # checks. Bridges internal (LiteLLM proxy) and egress (outbound) networks.
   #
@@ -402,12 +399,13 @@ services:
   #  - Required for cloudflared dependency: service_healthy
   #
   # Security:
-  #  - NET_BIND_SERVICE: Only cap needed (bind to ports <1024 if configured)
-  #  - read-only filesystem; persistent state via bind mounts to ~/.openclaw
+  #  - read-only filesystem with tmpfs for Node.js cache dirs
+  #  - Persistent state via bind mounts to ~/.openclaw
   #  - Container sees ONLY config + workspace directories, no other host paths
   #  - no_new_privileges, drop all capabilities, unprivileged user
   #  - ipc: private (isolated)
   openclaw-gateway:
+    <<: *hardened-defaults
     image: "${OPENCLAW_IMAGE:-openclaw:local}"
     container_name: opendeclawed-gateway
     # Upstream CMD: node openclaw.mjs gateway --allow-unconfigured
@@ -427,13 +425,15 @@ services:
       # Tunnel mode: no port binding (cloudflared proxies)
       - "127.0.0.1:${GATEWAY_PORT:-18789}:${GATEWAY_PORT:-18789}"
     volumes:
-      # Persistent config — bind mount to host ~/.openclaw (survives daemon restarts).
+      # Persistent config -- bind mount to host ~/.openclaw (survives daemon restarts).
       # Matches upstream: /home/node/.openclaw is the default config path.
       - ${OPENCLAW_CONFIG_DIR:-~/.openclaw}:/home/node/.openclaw:rw
       - ${OPENCLAW_WORKSPACE_DIR:-~/.openclaw/workspace}:/home/node/.openclaw/workspace:rw
     tmpfs:
       - /tmp:size=2g,noexec,nosuid,nodev
       - /run:size=512m,noexec,nosuid,nodev
+      - /app/.cache:size=256m,noexec,nosuid,nodev
+      - /home/node/.npm:size=128m,noexec,nosuid,nodev
     environment:
       - HOME=/home/node
       - OPENCLAW_GATEWAY_TOKEN=${OPENCLAW_GATEWAY_TOKEN:-}
@@ -451,40 +451,28 @@ services:
         reservations:
           cpus: "${GATEWAY_CPUS_RESERVE:-1}"
           memory: "${GATEWAY_MEM_RESERVE:-2g}"
-    # Note: read_only omitted — Node.js app writes temp files to /app/.cache, /tmp, etc.
-    # Hardening still applied via: no-new-privileges, cap_drop ALL, non-root user, tmpfs.
-    security_opt:
-      - no-new-privileges:true
-    cap_drop:
-      - ALL
-    cap_add:
-      - NET_BIND_SERVICE
+    read_only: true
     # Upstream image sets USER node (uid 1000). Must match for /app file access.
     user: "1000:1000"
-    ipc: private
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://127.0.0.1:${GATEWAY_PORT:-18789}/health"]
       interval: 10s
       timeout: 5s
       retries: 5
       start_period: 30s
-    logging:
-      driver: json-file
-      options:
-        max-size: 10m
-        max-file: 5
-    restart: unless-stopped
     labels:
       - "com.centurylinklabs.watchtower.enable=true"
     depends_on:
       egress-firewall:
-        condition: service_started
+        condition: service_healthy
       litellm:
         condition: service_healthy
+      blocky:
+        condition: service_started
 
-  # ─────────────────────────────────────────────────────────────────────
+  # -------------------------------------------------------------------
   # CLOUDFLARED: Cloudflare Tunnel ingress (optional, profile: tunnel)
-  # ─────────────────────────────────────────────────────────────────────
+  # -------------------------------------------------------------------
   # Establishes a secure tunnel to Cloudflare, making openclaw-gateway
   # accessible via Cloudflare's global network without exposing host ports.
   #
@@ -493,7 +481,7 @@ services:
   #  - Requires CLOUDFLARE_TOKEN env var
   #
   # Security:
-  #  - Depends on: egress-firewall (init), openclaw-gateway (healthy)
+  #  - Depends on: egress-firewall (healthy), openclaw-gateway (healthy)
   #  - read-only filesystem
   #  - NO capabilities at all (cap_drop: [ALL], no cap_add)
   #  - user 65534:65534 (nobody:nogroup)
@@ -505,6 +493,7 @@ services:
   #  - CLOUDFLARE_TUNNEL_NAME: Tunnel ID or name
   #  - CLOUDFLARE_TUNNEL_ROUTE: Hostname to route (e.g., openclaw.example.com)
   cloudflared:
+    <<: *hardened-defaults
     image: "${CLOUDFLARED_IMAGE:-cloudflare/cloudflared:2024.1.1}"
     container_name: opendeclawed-cloudflared
     profiles:
@@ -523,7 +512,7 @@ services:
           service: "http://openclaw-gateway:${GATEWAY_PORT:-18789}"
         - service: http_status:404
       CFGEOF
-        exec cloudflared tunnel --config /etc/cloudflared/config.yml run --token "${CLOUDFLARE_TOKEN}"
+        exec cloudflared tunnel --config /etc/cloudflared/config.yml run
       '
     networks:
       openclaw-internal: {}
@@ -533,32 +522,25 @@ services:
     read_only: true
     tmpfs:
       - /etc/cloudflared:size=1m,noexec,nosuid,nodev
-    security_opt:
-      - no-new-privileges:true
-    cap_drop:
-      - ALL
     user: "65534:65534"
-    ipc: private
     environment:
       - CLOUDFLARE_TOKEN=${CLOUDFLARE_TOKEN:-}
-    logging:
-      driver: json-file
-      options:
-        max-size: 10m
-        max-file: 3
-    restart: unless-stopped
+      # Fix #28: cloudflared reads TUNNEL_TOKEN from env instead of CLI arg
+      - TUNNEL_TOKEN=${CLOUDFLARE_TOKEN:-}
     depends_on:
       egress-firewall:
-        condition: service_started
+        condition: service_healthy
       openclaw-gateway:
         condition: service_healthy
+      blocky:
+        condition: service_started
 
-  # ─────────────────────────────────────────────────────────────────────
+  # -------------------------------------------------------------------
   # TAILSCALE: Zero-config mesh VPN ingress (optional, profile: tailscale)
-  # ─────────────────────────────────────────────────────────────────────
+  # -------------------------------------------------------------------
   # Exposes openclaw-gateway via your Tailscale tailnet. Devices on the
   # same tailnet can reach the gateway at https://<hostname>.<tailnet>.ts.net.
-  # Uses Tailscale Serve to proxy HTTPS → gateway HTTP internally.
+  # Uses Tailscale Serve to proxy HTTPS -> gateway HTTP internally.
   #
   # Profile: "tailscale"
   #  - Enable with: docker compose --profile tailscale up -d
@@ -577,6 +559,7 @@ services:
   #  - TS_HOSTNAME: Machine name on your tailnet (default: "openclaw")
   #  - TS_EXTRA_ARGS: Additional tailscaled flags (optional)
   tailscale:
+    <<: *hardened-defaults
     image: "${TAILSCALE_IMAGE:-tailscale/tailscale:v1.76.6}"
     container_name: opendeclawed-tailscale
     profiles:
@@ -597,7 +580,9 @@ services:
       - TS_SERVE_CONFIG=/config/serve.json
       - TS_USERSPACE=true
       - TS_EXTRA_ARGS=${TS_EXTRA_ARGS:-}
-    # Tailscale Serve config: proxy HTTPS on :443 → gateway HTTP
+    # Tailscale Serve config: proxy HTTPS on :443 -> gateway HTTP
+    # TS_CERT_DOMAIN defaults to ts.net; override for custom Tailscale domains
+    # (e.g. if using a custom DERP server or vanity domain).
     entrypoint: |
       /bin/sh -c '
         mkdir -p /config
@@ -628,33 +613,24 @@ services:
           memory: "${TAILSCALE_MEM:-128m}"
           pids: 128
     read_only: true
-    security_opt:
-      - no-new-privileges:true
-    cap_drop:
-      - ALL
     cap_add:
       - NET_ADMIN
       - NET_RAW
-    # NOTE: user directive omitted — Tailscale needs root for WireGuard tunnel setup.
+    # NOTE: user directive omitted -- Tailscale needs root for WireGuard tunnel setup.
     # Mitigated by: read_only, no-new-privileges, cap_drop ALL + selective cap_add.
-    ipc: private
-    logging:
-      driver: json-file
-      options:
-        max-size: 10m
-        max-file: 3
-    restart: unless-stopped
     depends_on:
       egress-firewall:
-        condition: service_started
+        condition: service_healthy
       openclaw-gateway:
         condition: service_healthy
+      blocky:
+        condition: service_started
     labels:
       - "com.centurylinklabs.watchtower.enable=false"
 
-  # ─────────────────────────────────────────────────────────────────────
+  # -------------------------------------------------------------------
   # DOCKER-SOCKET-PROXY: Least-privilege Docker API access for Watchtower
-  # ─────────────────────────────────────────────────────────────────────
+  # -------------------------------------------------------------------
   # Instead of giving Watchtower direct access to /var/run/docker.sock
   # (which is equivalent to root on the host), we proxy only the specific
   # Docker API endpoints Watchtower needs: container list, image pull,
@@ -666,6 +642,7 @@ services:
   #  - Internal network only (no internet access)
   #  - cap_drop ALL, no_new_privileges
   docker-socket-proxy:
+    <<: *hardened-defaults
     image: "${SOCKET_PROXY_IMAGE:-tecnativa/docker-socket-proxy:0.2.0}"
     container_name: opendeclawed-socket-proxy
     profiles:
@@ -706,44 +683,40 @@ services:
           cpus: "0.5"
           memory: "64m"
           pids: 64
-    security_opt:
-      - no-new-privileges:true
-    cap_drop:
-      - ALL
-    # NOTE: user directive omitted — socket proxy needs root to bind port 2375.
-    # NOTE: read_only omitted — entrypoint generates haproxy.cfg from template
+    # NOTE: user directive omitted -- socket proxy needs root to bind port 2375.
+    # NOTE: read_only omitted -- entrypoint generates haproxy.cfg from template
     # at /usr/local/etc/haproxy/ on startup. Mitigated by cap_drop ALL +
     # no-new-privileges + Docker socket being the actual security boundary.
-    ipc: private
     tmpfs:
       - /tmp:size=16m,noexec,nosuid,nodev
       - /run:size=16m,noexec,nosuid,nodev
-    logging:
-      driver: json-file
-      options:
-        max-size: 10m
-        max-file: 3
-    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:2375/version || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
     labels:
       - "com.centurylinklabs.watchtower.enable=false"
 
-  # ─────────────────────────────────────────────────────────────────────
+  # -------------------------------------------------------------------
   # BLOCKY: DNS firewall with threat intelligence blocklists
-  # ─────────────────────────────────────────────────────────────────────
+  # -------------------------------------------------------------------
   # Lightweight DNS proxy that filters queries against known-malicious
   # domains (malware C2, phishing, cryptomining, trackers). Upstream
   # resolvers use DNS-over-HTTPS for privacy. All containers on the
   # egress network use this as their DNS server.
   #
-  # Profile: always-on (no profile — runs with default stack)
+  # Profile: always-on (no profile -- runs with default stack)
   #
   # Security:
   #  - Blocks known-malicious domains at DNS layer
-  #  - Upstream via DoH (DNS-over-HTTPS) — no plaintext DNS to ISP
+  #  - Upstream via DoH (DNS-over-HTTPS) -- no plaintext DNS to ISP
   #  - Internal network only for serving; egress for upstream DoH
   #  - cap_drop ALL, no_new_privileges, read-only root
   #  - Provides defense against DNS exfiltration tunneling via rate limits
   blocky:
+    <<: *hardened-defaults
     image: "${BLOCKY_IMAGE:-spx01/blocky:v0.24}"
     container_name: opendeclawed-blocky
     command: ["--config", "/app/config/config.yml"]
@@ -762,29 +735,24 @@ services:
           memory: "${BLOCKY_MEM:-64m}"
           pids: 64
     read_only: true
-    security_opt:
-      - no-new-privileges:true
-    cap_drop:
-      - ALL
     cap_add:
       - NET_BIND_SERVICE
     user: "65534:65534"
-    ipc: private
-    logging:
-      driver: json-file
-      options:
-        max-size: 10m
-        max-file: 3
-    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:4000/api/blocking/status || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
     depends_on:
       egress-firewall:
-        condition: service_started
+        condition: service_healthy
     labels:
       - "com.centurylinklabs.watchtower.enable=true"
 
-  # ─────────────────────────────────────────────────────────────────────
+  # -------------------------------------------------------------------
   # WATCHTOWER: Automatic container image updates (optional, profile: monitor)
-  # ─────────────────────────────────────────────────────────────────────
+  # -------------------------------------------------------------------
   # Monitors running containers and updates them when new images are
   # available. Label-controlled: only updates containers with
   # com.centurylinklabs.watchtower.enable=true.
@@ -799,6 +767,7 @@ services:
   #  - Poll interval configurable (default 24h)
   #  - Read-only root filesystem
   watchtower:
+    <<: *hardened-defaults
     image: "${WATCHTOWER_IMAGE:-containrrr/watchtower:1.7.1}"
     container_name: opendeclawed-watchtower
     profiles:
@@ -826,48 +795,37 @@ services:
           memory: "${WATCHTOWER_MEM:-128m}"
           pids: 64
     read_only: true
-    security_opt:
-      - no-new-privileges:true
-    cap_drop:
-      - ALL
-    # NOTE: user directive omitted — Watchtower image runs as root by default
+    # NOTE: user directive omitted -- Watchtower image runs as root by default
     # and needs it for Docker API interactions. Mitigated by socket proxy.
-    ipc: private
-    logging:
-      driver: json-file
-      options:
-        max-size: 10m
-        max-file: 3
-    restart: unless-stopped
     depends_on:
       docker-socket-proxy:
-        condition: service_started
+        condition: service_healthy
     labels:
       - "com.centurylinklabs.watchtower.enable=false"
 
-  # ─────────────────────────────────────────────────────────────────────
+  # -------------------------------------------------------------------
   # DOZZLE: Real-time container log viewer (monitor profile)
-  # ─────────────────────────────────────────────────────────────────────
+  # -------------------------------------------------------------------
   # Lightweight web UI for viewing, filtering, and searching container
-  # logs in real time. Reads Docker's native json-file logs — no log
+  # logs in real time. Reads Docker's native json-file logs -- no log
   # driver changes or sidecars required. Read-only Docker socket access.
   #
   # Profile: "monitor" (same as Watchtower)
   #
   # Security:
-  #  - Docker API via socket-proxy (no direct socket mount — prevents secret leakage via docker inspect)
+  #  - Docker API via socket-proxy (no direct socket mount -- prevents secret leakage via docker inspect)
   #  - DOZZLE_FILTER: only shows openclaw-* containers
   #  - DOZZLE_NO_ANALYTICS: disables telemetry to Dozzle maintainers
   #  - Port bound to 127.0.0.1 (local access only)
   #  - read-only root, all caps dropped, no_new_privileges
   dozzle:
+    <<: *hardened-defaults
     image: "${DOZZLE_IMAGE:-amir20/dozzle:v8.8.2}"
     container_name: opendeclawed-dozzle
     profiles:
       - monitor
     networks:
       openclaw-internal: {}
-      openclaw-egress: {}
     # SECURITY: No direct Docker socket. Uses socket-proxy (same as Watchtower).
     # Dozzle only needs container list + events for log streaming.
     environment:
@@ -876,7 +834,7 @@ services:
       - DOZZLE_LEVEL=info
       - DOZZLE_FILTER=name=opendeclawed-*
       - DOZZLE_NO_ANALYTICS=true
-    # NOTE: dns directive omitted — Dozzle needs Docker's embedded DNS (127.0.0.11)
+    # NOTE: dns directive omitted -- Dozzle needs Docker's embedded DNS (127.0.0.11)
     # to resolve docker-socket-proxy. Blocky DNS would break service discovery.
     tmpfs:
       - /tmp:size=32m,noexec,nosuid,nodev
@@ -889,25 +847,20 @@ services:
           memory: "${DOZZLE_MEM:-64m}"
           pids: 64
     read_only: true
-    security_opt:
-      - no-new-privileges:true
-    cap_drop:
-      - ALL
     user: "65534:65534"
-    ipc: private
+    # Override logging: Dozzle generates minimal logs, smaller limits sufficient
     logging:
       driver: json-file
       options:
         max-size: 5m
-        max-file: 2
-    restart: unless-stopped
+        max-file: "2"
     depends_on:
       docker-socket-proxy:
-        condition: service_started
+        condition: service_healthy
 
-  # ─────────────────────────────────────────────────────────────────────
+  # -------------------------------------------------------------------
   # OPENCLAW-CLI: Interactive CLI for onboarding and debugging
-  # ─────────────────────────────────────────────────────────────────────
+  # -------------------------------------------------------------------
   # Interactive shell for running openclaw commands, onboarding workflows,
   # and debugging. Shares networks with gateway for API access.
   #
@@ -922,6 +875,7 @@ services:
   #  - Other caps still dropped, no_new_privileges, ipc isolated
   #  - Read-write home volume for credentials/config
   openclaw-cli:
+    <<: *hardened-defaults
     image: "${OPENCLAW_IMAGE:-openclaw:local}"
     container_name: opendeclawed-cli
     entrypoint: ["node", "dist/index.js"]
@@ -956,29 +910,19 @@ services:
           cpus: "1"
           memory: "2g"
           pids: 256
-    security_opt:
-      - no-new-privileges:true
-    cap_drop:
-      - ALL
     cap_add:
       - NET_RAW
     user: "1000:1000"
-    ipc: private
-    logging:
-      driver: json-file
-      options:
-        max-size: 10m
-        max-file: 3
     depends_on:
       egress-firewall:
-        condition: service_started
+        condition: service_healthy
       openclaw-gateway:
         condition: service_started
 
 networks:
-  # ─────────────────────────────────────────────────────────────────────
+  # -------------------------------------------------------------------
   # OPENCLAW-INTERNAL: LLM service mesh (no internet access)
-  # ─────────────────────────────────────────────────────────────────────
+  # -------------------------------------------------------------------
   # Bridge network for litellm, llama-embed, llama-chat, and openclaw-gateway
   # to communicate. Marked internal: true so containers cannot reach the host
   # or internet directly. Subject to egress firewall rules (allows
@@ -990,9 +934,9 @@ networks:
       config:
         - subnet: "${INTERNAL_SUBNET:-172.27.0.0/24}"
 
-  # ─────────────────────────────────────────────────────────────────────
+  # -------------------------------------------------------------------
   # OPENCLAW-EGRESS: Egress-controlled network (outbound rules apply)
-  # ─────────────────────────────────────────────────────────────────────
+  # -------------------------------------------------------------------
   # Bridge network for openclaw-gateway and cloudflared. Subject to strict
   # egress firewall rules: allows DNS, established/related, and inter-
   # container traffic; blocks RFC1918 private ranges and reserved IPs.
@@ -1004,41 +948,41 @@ networks:
         - subnet: "${EGRESS_SUBNET:-172.28.0.0/24}"
 
 volumes:
-  # ─────────────────────────────────────────────────────────────────────
+  # -------------------------------------------------------------------
   # BLOCKY-CONFIG: DNS firewall configuration
-  # ─────────────────────────────────────────────────────────────────────
+  # -------------------------------------------------------------------
   blocky-config:
     driver: local
 
-  # ─────────────────────────────────────────────────────────────────────
+  # -------------------------------------------------------------------
   # TAILSCALE-STATE: Persistent Tailscale auth state
-  # ─────────────────────────────────────────────────────────────────────
+  # -------------------------------------------------------------------
   # Stores WireGuard keys and auth state. Persisting this avoids
   # re-authentication on container restart.
   tailscale-state:
     driver: local
 
 
-  # ─────────────────────────────────────────────────────────────────────
+  # -------------------------------------------------------------------
   # OPENCLAW HOME: Bind-mounted from host (no volume definition needed)
-  # ─────────────────────────────────────────────────────────────────────
+  # -------------------------------------------------------------------
   # The gateway and CLI containers bind-mount two host directories:
-  #   ${OPENCLAW_CONFIG_DIR:-~/.openclaw}     → /home/openclaw/config
-  #   ${OPENCLAW_WORKSPACE_DIR:-~/.openclaw/workspace} → /home/openclaw/workspace
+  #   ${OPENCLAW_CONFIG_DIR:-~/.openclaw}     -> /home/openclaw/config
+  #   ${OPENCLAW_WORKSPACE_DIR:-~/.openclaw/workspace} -> /home/openclaw/workspace
   #
   # These are the ONLY host paths accessible to the gateway container.
-  # Docker enforces this — containers cannot mount paths not declared
+  # Docker enforces this -- containers cannot mount paths not declared
   # in their compose volumes section (and we block Docker socket access
   # via the socket proxy, preventing runtime volume creation).
   #
   # Host-side permissions (set by setup.sh):
-  #   ~/.openclaw/            → 700 (owner only)
-  #   ~/.openclaw/openclaw.json → 600
-  #   ~/.openclaw/workspace/  → 700
+  #   ~/.openclaw/            -> 700 (owner only)
+  #   ~/.openclaw/openclaw.json -> 600
+  #   ~/.openclaw/workspace/  -> 700
 
-  # ─────────────────────────────────────────────────────────────────────
+  # -------------------------------------------------------------------
   # LLAMA-MODELS: Shared model cache (read-only for services)
-  # ─────────────────────────────────────────────────────────────────────
+  # -------------------------------------------------------------------
   # GGUF quantized model files for llama-embed and llama-chat.
   # Bind-mounted from host at startup. Models must be placed in
   # LLAMA_MODELS_PATH on the host before docker-compose up.

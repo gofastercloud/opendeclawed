@@ -28,22 +28,23 @@ fi
 
 MODE="${1:-}"
 CONFIG="${REPO_DIR}/.trufflehog-config.yaml"
-EXCLUDE_ARG=""
+EXCLUDE_ARGS=()
 if [ -f "${CONFIG}" ]; then
-    EXCLUDE_ARG="--exclude-paths=${CONFIG}"
+    EXCLUDE_ARGS=("--exclude-paths=${CONFIG}")
 fi
 
 echo -e "${GREEN}[+]${NC} TruffleHog secrets scan"
 echo ""
 
+EXIT_CODE=0
 case "${MODE}" in
     --full)
         echo -e "  Scanning ${YELLOW}entire git history${NC}..."
         trufflehog git "file://${REPO_DIR}" \
             --fail \
             --no-update \
-            ${EXCLUDE_ARG} \
-            2>&1
+            "${EXCLUDE_ARGS[@]}" \
+            2>&1 || EXIT_CODE=$?
         ;;
     --staged)
         echo -e "  Scanning ${YELLOW}staged changes only${NC}..."
@@ -51,20 +52,18 @@ case "${MODE}" in
             --since-branch HEAD \
             --fail \
             --no-update \
-            ${EXCLUDE_ARG} \
-            2>&1
+            "${EXCLUDE_ARGS[@]}" \
+            2>&1 || EXIT_CODE=$?
         ;;
     *)
         echo -e "  Scanning ${YELLOW}current working tree${NC}..."
         trufflehog filesystem "${REPO_DIR}" \
             --fail \
             --no-update \
-            ${EXCLUDE_ARG} \
-            2>&1
+            "${EXCLUDE_ARGS[@]}" \
+            2>&1 || EXIT_CODE=$?
         ;;
 esac
-
-EXIT_CODE=$?
 echo ""
 if [ ${EXIT_CODE} -eq 0 ]; then
     echo -e "${GREEN}[+] No secrets detected.${NC}"

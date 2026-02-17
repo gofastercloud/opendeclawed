@@ -19,17 +19,27 @@ Usage (standalone):
   python3 safe_install.py --skill <name> [--vet-only] [--force]
 """
 
+from __future__ import annotations
+
 import argparse
 import hashlib
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+
+try:
+    import requests
+
+    HAS_REQUESTS = True
+except ImportError:
+    HAS_REQUESTS = False
 
 # ── Config ───────────────────────────────────────────────────────────────
 
@@ -46,22 +56,29 @@ VT_API_URL = "https://www.virustotal.com/api/v3"
 
 # Patterns that should never appear in a skill
 BLOCKED_PATTERNS = [
-    r"subprocess\.call\(.*shell\s*=\s*True",
+    r"subprocess\.(call|run|Popen)\(.*shell\s*=\s*True",
+    r"subprocess\.Popen\(",
     r"os\.system\(",
-    r"exec\(",
-    r"eval\(",
+    r"exec\s*\(",
+    r"eval\s*\(",
     r"__import__\(",
-    r"socket\.connect\(",
-    r"urllib\.request\.urlopen\(",  # should use approved HTTP client
-    r"requests\.get\(.*192\.168\.",  # LAN access attempt
+    r"importlib\.import_module\(",
+    r"builtins\.\s*(exec|eval)\(",
+    r"getattr\(.*['\"]system['\"]\)",
+    r"socket\.(connect|create_connection)\(",
+    r"urllib\.request\.urlopen\(",
+    r"urllib3\.",
+    r"httpx\.",
+    r"requests\.get\(.*192\.168\.",
     r"requests\.get\(.*10\.\d+\.",
     r"requests\.get\(.*172\.(1[6-9]|2\d|3[01])\.",
     r"/etc/shadow",
     r"/etc/passwd",
     r"\.ssh/",
     r"PRIVATE.KEY",
-    r"sk-ant-",  # Anthropic key pattern
+    r"sk-ant-",
     r"BEGIN.*PRIVATE",
+    r"compile\s*\(.+exec",
 ]
 
 # Permissions that skills must never request
@@ -73,7 +90,7 @@ MAX_SKILL_SIZE_MB = 50
 # ── Helpers ──────────────────────────────────────────────────────────────
 
 
-def log(level: str, msg: str):
+def log(level: str, msg: str) -> None:
     icons = {"info": "[+]", "warn": "[!]", "error": "[x]", "ok": "[✓]"}
     print(f"{icons.get(level, '[?]')} {msg}")
 
@@ -93,7 +110,7 @@ def load_allowlist() -> dict:
         return json.load(f)
 
 
-def save_allowlist(data: dict):
+def save_allowlist(data: dict) -> None:
     os.makedirs(os.path.dirname(ALLOWLIST_PATH), exist_ok=True)
     with open(ALLOWLIST_PATH, "w") as f:
         json.dump(data, f, indent=2)
@@ -189,6 +206,18 @@ def static_analysis(path: str, work_dir: str) -> list[str]:
         findings.append("CRITICAL: Failed to extract archive (possibly malformed)")
         return findings
 
+    # SECURITY: Check for symlinks that could enable path traversal
+    for root, dirs, files in os.walk(extract_dir):
+        for name in dirs + files:
+            fpath = os.path.join(root, name)
+            if os.path.islink(fpath):
+                link_target = os.readlink(fpath)
+                rel = os.path.relpath(fpath, extract_dir)
+                findings.append(
+                    f"CRITICAL: Symlink found: '{rel}' -> '{link_target}' (potential symlink attack)"
+                )
+                return findings
+
     # Check manifest permissions
     manifest_path = None
     for root, _dirs, files in os.walk(extract_dir):
@@ -236,8 +265,8 @@ def static_analysis(path: str, work_dir: str) -> list[str]:
         log("ok", "Static analysis: CLEAN")
     else:
         log("warn", f"Static analysis: {len(findings)} finding(s)")
-        for f in findings:
-            log("warn", f"  → {f}")
+        for finding in findings:
+            log("warn", f"  → {finding}")
 
     return findings
 
@@ -251,10 +280,9 @@ def virustotal_scan(file_hash: str, file_path: str) -> dict:
         log("warn", "VIRUSTOTAL_API_KEY not set — skipping VT scan")
         return {"status": "skipped", "reason": "no_api_key"}
 
-    try:
-        import requests
-    except ImportError:
+    if not HAS_REQUESTS:
         log("warn", "requests library not available — skipping VT scan")
+        log("warn", "Install: pip install requests")
         return {"status": "skipped", "reason": "no_requests_lib"}
 
     headers = {"x-apikey": VT_API_KEY}
@@ -367,7 +395,7 @@ def update_allowlist(skill_name: str, file_hash: str, vt_result: dict) -> bool:
 # ── Step 6: Install ─────────────────────────────────────────────────────
 
 
-def install_skill(skill_name: str, local_archive: str = ""):
+def install_skill(skill_name: str, local_archive: str = "") -> None:
     """Install the skill via openclaw CLI.
 
     SECURITY (TOCTOU fix): If local_archive is provided, install from the
@@ -400,13 +428,12 @@ def install_skill(skill_name: str, local_archive: str = ""):
 # ── Quarantine ───────────────────────────────────────────────────────────
 
 
-def quarantine(skill_name: str, file_path: str, reason: str):
+def quarantine(skill_name: str, file_path: str, reason: str) -> None:
     """Move suspect skill to quarantine directory."""
     os.makedirs(QUARANTINE_DIR, exist_ok=True)
     ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
     dest = os.path.join(QUARANTINE_DIR, f"{skill_name}_{ts}.quarantined")
 
-    import shutil
     shutil.copy2(file_path, dest)
 
     # Write quarantine metadata
@@ -426,7 +453,7 @@ def quarantine(skill_name: str, file_path: str, reason: str):
 # ── Main Pipeline ────────────────────────────────────────────────────────
 
 
-def run_pipeline(skill_name: str, vet_only: bool = False, force: bool = False):
+def run_pipeline(skill_name: str, vet_only: bool = False, force: bool = False) -> None:
     """Execute the full safe-install pipeline."""
     print("=" * 60)
     print(f"  safe-install: {skill_name}")
@@ -435,6 +462,12 @@ def run_pipeline(skill_name: str, vet_only: bool = False, force: bool = False):
 
     # Check if already allowlisted
     al = load_allowlist()
+
+    policy = al.get("policy", {})
+    if policy.get("require_virustotal", True) and not HAS_REQUESTS:
+        log("error", "requests library required for VirusTotal scanning (policy: require_virustotal)")
+        log("error", "Install: pip install requests")
+        sys.exit(1)
     if skill_name in al.get("allowlist", {}) and not force:
         entry = al["allowlist"][skill_name]
         log("ok", f"Skill '{skill_name}' is already allowlisted")

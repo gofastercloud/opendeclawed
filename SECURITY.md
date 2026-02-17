@@ -137,29 +137,42 @@ docker-compose up -d
 
 ## Container Hardening
 
-### Unprivileged User
+### Least-Privileged User
 
-All services run as **user 65534:65534** (nobody:nogroup):
+Services run as the least-privileged user their function allows. Most run as **65534:65534** (nobody:nogroup), but some require elevated users for specific operations:
 
-```yaml
-user: "65534:65534"
-```
+| Service | User | Why |
+|---------|------|-----|
+| llama-embed | 65534:65534 | No special file access needed |
+| llama-chat | 65534:65534 | No special file access needed |
+| litellm | 65534:65534 | No special file access needed |
+| cloudflared | 65534:65534 | No special file access needed |
+| blocky | 65534:65534 | No special file access needed |
+| dozzle | 65534:65534 | No special file access needed |
+| openclaw-gateway | 1000:1000 | Upstream image sets USER node (uid 1000); must match for /app file access |
+| openclaw-cli | 1000:1000 | Same upstream image as gateway |
+| egress-firewall | root | Required for iptables rule installation via `apk add` and `iptables` |
+| docker-socket-proxy | root | Required for binding to port 2375 and Docker socket access |
+| watchtower | root | Required for Docker API interactions via socket proxy |
+| tailscale | root | Required for WireGuard tunnel setup (NET_ADMIN) |
 
-**Effect**:
+**Effect** (for unprivileged services):
 - Cannot create files in directories owned by root
 - Cannot access files with restrictive permissions
 - Reduces impact of container breakout
 
 ### Dropped Capabilities
 
-All services drop **ALL** capabilities:
+All services drop **ALL** capabilities, then selectively add only what is required:
 
 ```yaml
 cap_drop:
   - ALL
+cap_add:
+  - <only what's needed>
 ```
 
-Then selectively add only required capabilities:
+Per-service capability grants:
 
 | Service | Capability | Why |
 |---------|-----------|-----|
@@ -186,17 +199,23 @@ Then selectively add only required capabilities:
 
 ### Read-Only Filesystems
 
-All services mount root filesystem as read-only:
+Most services mount root filesystem as read-only:
 
 ```yaml
 read_only: true
 ```
 
-Then allow write access only where needed:
+**Exceptions**:
+- **egress-firewall**: Needs writable root for `apk add iptables` at startup. Mitigated by Alpine image pinned by tag and Trivy scanning.
+- **docker-socket-proxy**: Needs writable root because its entrypoint generates `haproxy.cfg` from a template. Mitigated by cap_drop ALL and no-new-privileges.
+- **openclaw-gateway**: Node.js app writes temp files to `/app/.cache`, etc. Mitigated by no-new-privileges, cap_drop ALL, non-root user (1000:1000), and tmpfs mounts.
+- **openclaw-cli**: Interactive debugging container; same image as gateway.
+
+Services with `read_only: true` allow write access only where needed:
 
 ```yaml
 volumes:
-  - openclaw-home:/home/openclaw:rw  # Gateway config
+  - ~/.openclaw:/home/node/.openclaw:rw  # Gateway config (bind mount)
 tmpfs:
   - /tmp:size=2g,noexec,nosuid,nodev
   - /run:size=512m,noexec,nosuid,nodev
@@ -235,14 +254,29 @@ ipc: private       # All services: no shared memory between containers
 ### Network Architecture
 
 ```
-openclaw-internal (internal=true)
-├── llama-embed     (can only reach DNS, internal services)
-├── llama-chat      (can only reach DNS, internal services)
-└── openclaw-gateway (can reach llama services via private IPs)
+openclaw-internal (internal=true, 172.27.0.0/24)
+├── llama-embed        (LLM backend, internal only)
+├── llama-chat         (LLM backend, internal only)
+├── litellm            (LLM router, internal only)
+├── openclaw-gateway   (bridges internal + egress)
+├── blocky             (DNS firewall, pinned to 172.27.0.53)
+├── docker-socket-proxy (Docker API filter, internal only)
+├── watchtower         (auto-updater, internal only)
+├── dozzle             (log viewer, bridges internal + egress)
+├── cloudflared        (tunnel, bridges internal + egress)
+├── tailscale          (mesh VPN, bridges internal + egress)
+└── openclaw-cli       (debugging, bridges internal + egress)
 
-openclaw-egress
-├── openclaw-gateway (can reach DNS, established/related, inter-container)
-└── cloudflared     (can reach Cloudflare edge, DNS)
+openclaw-egress (172.28.0.0/24)
+├── openclaw-gateway   (outbound API calls, egress-firewall controlled)
+├── blocky             (upstream DoH resolution)
+├── cloudflared        (Cloudflare edge connectivity)
+├── tailscale          (WireGuard tunnel)
+├── dozzle             (port binding on 127.0.0.1:5005)
+└── openclaw-cli       (network diagnostics)
+
+host network
+└── egress-firewall    (network_mode: host, iptables DOCKER-USER rules)
 
 docker0 (host bridge)
 └── Only for Docker infrastructure
@@ -260,6 +294,9 @@ docker0 (host bridge)
 - Gateway needs outbound access (external API calls)
 - Subject to egress firewall rules (no RFC1918)
 - Cloudflared needs access to Cloudflare edge
+- Blocky needs outbound for upstream DoH DNS resolution
+- Tailscale needs outbound for WireGuard coordination
+- Dozzle and openclaw-cli also bridge both networks
 - Allows legitimate external traffic with restrictions
 
 ### IP Addressing
@@ -493,7 +530,7 @@ Before running in production:
   - [ ] Alert on service failures
 
 - [ ] **Hardening**
-  - [ ] Verify all containers run as 65534:65534
+  - [ ] Verify all containers run as least-privileged user (see user table above)
   - [ ] Confirm all capabilities dropped
   - [ ] Test read-only filesystems
   - [ ] Validate no_new_privileges is set
@@ -525,7 +562,7 @@ docker-compose down
 docker-compose logs > incident-logs.txt
 
 # 3. Inspect volumes (do not execute containers)
-docker run --rm -v openclaw-home:/data alpine ls -la /data
+ls -la ~/.openclaw
 
 # 4. Review docker logs
 journalctl -u docker --since "2 hours ago"
@@ -547,10 +584,10 @@ If containers cannot reach needed external service:
 docker-compose logs openclaw-gateway | grep "Connection refused"
 
 # 2. Get IP address of target
-docker exec openclaw-gateway wget -O - http://api.example.com 2>&1 | grep -i "name"
+docker exec opendeclawed-gateway curl -sf http://api.example.com 2>&1
 
 # 3. Check firewall rules
-docker exec openclaw-egress-firewall iptables -L DOCKER-USER -vn
+docker exec opendeclawed-egress-firewall iptables -L DOCKER-USER -vn
 
 # 4. Add exception (if needed)
 # Edit docker-compose.yml egress-firewall entrypoint:
@@ -572,7 +609,7 @@ docker-compose logs cloudflared
 echo $CLOUDFLARE_TOKEN
 
 # 3. Check egress network can reach Cloudflare
-docker exec openclaw-gateway nslookup tunnel.cloudflare.com
+docker exec opendeclawed-gateway nslookup tunnel.cloudflare.com
 
 # 4. Check gateway is healthy (tunnel depends on this)
 docker-compose logs openclaw-gateway | grep health

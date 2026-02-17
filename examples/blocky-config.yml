@@ -7,8 +7,7 @@
 # This config provides:
 #  - DNS-over-HTTPS upstream (no plaintext DNS to ISP)
 #  - Threat intelligence blocklists (malware, phishing, C2, cryptomining)
-#  - Query rate limiting (anti-DNS-exfiltration)
-#  - Logging for forensic analysis
+#  - Query logging for forensic analysis
 
 upstream:
   default:
@@ -74,9 +73,11 @@ blocking:
   # How often to refresh blocklists
   refreshPeriod: 4h
 
-# ── Rate Limiting (anti-DNS-exfiltration) ─────────────────────────────
-# DNS tunneling typically generates many unique subdomain queries.
-# Rate limiting catches this pattern.
+# ── Query Logging (forensic analysis) ────────────────────────────────
+# All DNS queries are logged to console for forensic analysis.
+# Note: Blocky does not natively support query rate limiting.
+# DNS exfiltration is mitigated by restricting outbound DNS to blocky
+# only (via iptables rules in docker-compose.yml).
 queryLog:
   type: console
   # Log all queries for forensic analysis

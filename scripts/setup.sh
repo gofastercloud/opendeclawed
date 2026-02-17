@@ -35,10 +35,10 @@ ENV_FILE="${REPO_DIR}/.env"
 MODELS_DIR="${REPO_DIR}/models"
 INTERACTIVE=true
 
-EMBED_MODEL="${EMBED_MODEL_FILE:-nomic-embed-text-v1.5.Q5_K_M.gguf}"
-EMBED_URL="https://huggingface.co/nomic-ai/nomic-embed-text-v1.5-GGUF/resolve/main/${EMBED_MODEL}"
-CHAT_MODEL="${CHAT_MODEL_FILE:-Llama-3.2-3B-Instruct-Q5_K_M.gguf}"
-CHAT_URL="https://huggingface.co/bartowski/Llama-3.2-3B-Instruct-GGUF/resolve/main/${CHAT_MODEL}"
+EMBED_MODEL="${EMBED_MODEL_FILE:-nomic-embed-text-v1.5.f16.gguf}"
+EMBED_URL="https://huggingface.co/nomic-ai/nomic-embed-text-v1.5-GGUF/resolve/main/nomic-embed-text-v1.5.f16.gguf"
+CHAT_MODEL="${CHAT_MODEL_FILE:-mistral-7b-instruct-v0.2.Q6_K.gguf}"
+CHAT_URL="https://huggingface.co/TheBloke/Mistral-7B-Instruct-v0.2-GGUF/resolve/main/${CHAT_MODEL}"
 
 # Credential vars — populated by prompts or environment
 ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:-}"
@@ -98,13 +98,14 @@ HEADER
     # Update existing key or append new one
     if grep -q "^${key}=" "${ENV_FILE}" 2>/dev/null; then
         # Use a temp file to avoid sed -i portability issues
-        local tmpfile="${ENV_FILE}.tmp"
+        local tmpfile
+        tmpfile=$(mktemp "${ENV_FILE}.XXXXXX")
+        chmod 600 "${tmpfile}"
         grep -v "^${key}=" "${ENV_FILE}" > "${tmpfile}"
-        echo "${key}=${value}" >> "${tmpfile}"
+        printf '%s="%s"\n' "${key}" "${value}" >> "${tmpfile}"
         mv "${tmpfile}" "${ENV_FILE}"
-        chmod 600 "${ENV_FILE}"
     else
-        echo "${key}=${value}" >> "${ENV_FILE}"
+        printf '%s="%s"\n' "${key}" "${value}" >> "${ENV_FILE}"
     fi
 }
 
@@ -117,42 +118,62 @@ validate_format() {
         ANTHROPIC_API_KEY)
             if [[ ! "${value}" =~ ^sk-ant- ]]; then
                 warn "Doesn't look like an Anthropic API key (expected sk-ant-...)"
-                warn "If using an OAuth token, this is fine — press Enter to re-enter or type 'accept' to keep it."
-                read -rp "  > " override
-                [[ "${override}" == "accept" ]] && return 0
-                return 1
+                if [ "${INTERACTIVE}" = true ]; then
+                    warn "If using an OAuth token, this is fine — press Enter to re-enter or type 'accept' to keep it."
+                    read -rp "  > " override
+                    [[ "${override}" == "accept" ]] && return 0
+                    return 1
+                fi
+                warn "Accepting in non-interactive mode."
+                return 0
             fi
             ;;
         VIRUSTOTAL_API_KEY)
             if [[ ! "${value}" =~ ^[a-fA-F0-9]{64}$ ]]; then
                 warn "Doesn't look like a VirusTotal key (expected 64-char hex string)"
-                read -rp "  Accept anyway? [y/N]: " override
-                [[ "${override}" =~ ^[Yy] ]] && return 0
-                return 1
+                if [ "${INTERACTIVE}" = true ]; then
+                    read -rp "  Accept anyway? [y/N]: " override
+                    [[ "${override}" =~ ^[Yy] ]] && return 0
+                    return 1
+                fi
+                warn "Accepting in non-interactive mode."
+                return 0
             fi
             ;;
         CLOUDFLARE_TOKEN)
             if [[ ! "${value}" =~ ^eyJ ]]; then
                 warn "Doesn't look like a Cloudflare tunnel token (expected eyJ... base64)"
-                read -rp "  Accept anyway? [y/N]: " override
-                [[ "${override}" =~ ^[Yy] ]] && return 0
-                return 1
+                if [ "${INTERACTIVE}" = true ]; then
+                    read -rp "  Accept anyway? [y/N]: " override
+                    [[ "${override}" =~ ^[Yy] ]] && return 0
+                    return 1
+                fi
+                warn "Accepting in non-interactive mode."
+                return 0
             fi
             ;;
         TELEGRAM_BOT_TOKEN)
             if [[ ! "${value}" =~ ^[0-9]+:.+ ]]; then
                 warn "Doesn't look like a Telegram bot token (expected 123456789:ABC...)"
-                read -rp "  Accept anyway? [y/N]: " override
-                [[ "${override}" =~ ^[Yy] ]] && return 0
-                return 1
+                if [ "${INTERACTIVE}" = true ]; then
+                    read -rp "  Accept anyway? [y/N]: " override
+                    [[ "${override}" =~ ^[Yy] ]] && return 0
+                    return 1
+                fi
+                warn "Accepting in non-interactive mode."
+                return 0
             fi
             ;;
         TS_AUTHKEY)
             if [[ ! "${value}" =~ ^tskey- ]]; then
                 warn "Doesn't look like a Tailscale auth key (expected tskey-auth-... or tskey-client-...)"
-                read -rp "  Accept anyway? [y/N]: " override
-                [[ "${override}" =~ ^[Yy] ]] && return 0
-                return 1
+                if [ "${INTERACTIVE}" = true ]; then
+                    read -rp "  Accept anyway? [y/N]: " override
+                    [[ "${override}" =~ ^[Yy] ]] && return 0
+                    return 1
+                fi
+                warn "Accepting in non-interactive mode."
+                return 0
             fi
             ;;
     esac
@@ -245,6 +266,9 @@ header "Step 1/11 — Prerequisites"
 command -v docker >/dev/null 2>&1 || error "Docker not found. Install OrbStack (https://orbstack.dev) or Docker Desktop."
 docker compose version >/dev/null 2>&1 || error "Docker Compose V2 not found."
 
+command -v python3 >/dev/null 2>&1 || error "Python 3 not found. Required for config generation."
+info "Python: $(python3 --version 2>&1)"
+
 DOCKER_VERSION=$(docker version --format '{{.Server.Version}}' 2>/dev/null || echo "unknown")
 info "Docker Engine: ${DOCKER_VERSION}"
 
@@ -268,9 +292,9 @@ else
     if command -v brew >/dev/null 2>&1; then
         brew install trufflehog 2>/dev/null || warn "brew install trufflehog failed — install manually"
     else
-        curl -sSfL https://raw.githubusercontent.com/trufflesecurity/trufflehog/main/scripts/install.sh \
-            | sh -s -- -b /usr/local/bin 2>/dev/null \
-            || warn "TruffleHog auto-install failed. Install manually: https://github.com/trufflesecurity/trufflehog#installation"
+        warn "TruffleHog not available. Install manually:"
+        warn "  macOS:  brew install trufflehog"
+        warn "  Linux:  See https://github.com/trufflesecurity/trufflehog#installation"
     fi
     if command -v trufflehog >/dev/null 2>&1; then
         info "TruffleHog installed."
@@ -321,9 +345,18 @@ info "Config: ${CONFIG_DIR} (mode 700)"
 
 # Load existing .env if present (re-run scenario)
 if [ -f "${ENV_FILE}" ]; then
-    # shellcheck source=/dev/null
-    set +u  # .env may reference unset vars
-    source "${ENV_FILE}" 2>/dev/null || true
+    set +u
+    while IFS='=' read -r key value; do
+        # Only export valid variable names, skip comments and blank lines
+        if [[ "${key}" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
+            # Remove surrounding quotes if present
+            value="${value%\"}"
+            value="${value#\"}"
+            value="${value%\'}"
+            value="${value#\'}"
+            export "${key}=${value}"
+        fi
+    done < <(grep -v '^\s*#' "${ENV_FILE}" | grep -v '^\s*$')
     set -u
     info "Loaded existing .env (re-run detected)"
 fi
@@ -515,8 +548,8 @@ mkdir -p "${MODELS_DIR}"
 # Uses a function instead of associative arrays for bash 3.2 (macOS) compatibility.
 get_model_checksum() {
     case "$1" in
-        nomic-embed-text-v1.5.Q5_K_M.gguf)  echo "0c7930f6c4f6f29b7da5046e3a2c0832aa3f602db3de5760a95f0582dbd3d6e6" ;;
-        Llama-3.2-3B-Instruct-Q5_K_M.gguf)  echo "0b94ccd04d908304cec5246a3d942b64417a423bc5c6d47c73bc557e590b5194" ;;
+        nomic-embed-text-v1.5.f16.gguf)      echo "" ;; # TODO: update after first download
+        mistral-7b-instruct-v0.2.Q6_K.gguf) echo "" ;; # TODO: update after first download
         *)                                    echo "" ;;
     esac
 }
@@ -691,7 +724,7 @@ config = {
         "bind": "lan",
         "controlUi": {
             "enabled": True,
-            "allowInsecureAuth": True
+            "allowInsecureAuth": ingress_mode == "local"
         },
         "auth": {
             "mode": "token",
@@ -830,12 +863,12 @@ if [ "${INTERACTIVE}" = true ]; then
 fi
 
 # Build profile flags
-PROFILES=""
+PROFILES=()
 
 # LLM backend: containerized llama.cpp via LiteLLM proxy
 # To use an external backend (MLX, Ollama, vLLM), edit litellm_config.yaml
 # after setup to point at your host server (e.g. host.docker.internal:8091).
-PROFILES="--profile llama"
+PROFILES+=(--profile llama)
 
 # ── Generate litellm_config.yaml (LLM router config) ──────────────────
 # LiteLLM sits between OpenClaw and the actual LLM backends. All local
@@ -887,15 +920,18 @@ save_env LITELLM_PORT "${LITELLM_PORT}"
 # Blocky needs /app/config/config.yml inside the container.
 info "Populating blocky DNS config volume..."
 docker volume create opendeclawed_blocky-config >/dev/null 2>&1 || true
-docker run --rm \
+if ! docker run --rm \
     -v "${REPO_DIR}/examples/blocky-config.yml:/src/config.yml:ro" \
     -v opendeclawed_blocky-config:/config \
-    alpine cp /src/config.yml /config/config.yml
+    alpine cp /src/config.yml /config/config.yml 2>/dev/null; then
+    warn "Failed to populate blocky config volume. DNS filtering may not work."
+    warn "Ensure Docker can pull alpine image and try again."
+fi
 info "Blocky config ready."
 
 case "${INGRESS_MODE}" in
-    tunnel)    PROFILES="${PROFILES} --profile tunnel" ;;
-    tailscale) PROFILES="${PROFILES} --profile tailscale" ;;
+    tunnel)    PROFILES+=(--profile tunnel) ;;
+    tailscale) PROFILES+=(--profile tailscale) ;;
 esac
 
 # Ask about monitoring (default: enabled in both interactive and non-interactive)
@@ -908,12 +944,12 @@ if [ "${INTERACTIVE}" = true ]; then
     fi
 fi
 if [ "${ENABLE_MONITOR}" != "false" ]; then
-    PROFILES="${PROFILES} --profile monitor"
+    PROFILES+=(--profile monitor)
     info "Monitoring enabled (Watchtower + Dozzle)"
 fi
 
 info "Starting stack..."
-docker compose -f "${COMPOSE_FILE}" --env-file "${ENV_FILE}" ${PROFILES} up -d
+docker compose -f "${COMPOSE_FILE}" --env-file "${ENV_FILE}" "${PROFILES[@]}" up -d
 
 ###############################################################################
 header "Step 11/11 — Validate"
@@ -929,10 +965,16 @@ docker compose -f "${COMPOSE_FILE}" --env-file "${ENV_FILE}" ps --format '{{.Nam
 # Firewall check
 GATEWAY_ID=$(docker ps -q -f name=opendeclawed-gateway 2>/dev/null || true)
 if [ -n "${GATEWAY_ID}" ]; then
-    if docker exec "${GATEWAY_ID}" curl -sf --connect-timeout 3 http://192.168.1.1/ 2>/dev/null; then
-        warn "FIREWALL CHECK FAILED — containers can reach LAN!"
-    else
-        info "FIREWALL CHECK PASSED — LAN unreachable from containers"
+    FIREWALL_OK=true
+    for TEST_IP in 192.168.1.1 10.0.0.1 172.16.0.1; do
+        if docker exec "${GATEWAY_ID}" curl -sf --connect-timeout 2 "http://${TEST_IP}/" 2>/dev/null; then
+            warn "FIREWALL CHECK FAILED — containers can reach ${TEST_IP}!"
+            FIREWALL_OK=false
+            break
+        fi
+    done
+    if [ "${FIREWALL_OK}" = true ]; then
+        info "FIREWALL CHECK PASSED — private networks unreachable from containers"
     fi
 fi
 
@@ -1175,7 +1217,7 @@ echo "    Secrets: ./scripts/scan-secrets.sh        (scan working tree)"
 echo "             ./scripts/scan-secrets.sh --full  (scan git history)"
 [ -n "${VIRUSTOTAL_API_KEY}" ] && \
 echo "    Install: \"install skill <name>\" via Telegram (safe-install skill)"
-if [[ "${PROFILES}" == *"monitor"* ]]; then
+if [ "${ENABLE_MONITOR}" != "false" ]; then
 echo ""
 echo "  Monitoring:"
 echo "    Dozzle Logs:  http://127.0.0.1:${DOZZLE_PORT:-5005}/"
