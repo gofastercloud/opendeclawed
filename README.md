@@ -13,7 +13,7 @@ Production-grade, security-hardened Docker deployment for OpenClaw, an AI agent 
   - DNS firewall (blocky) with threat blocklists — blocks malware C2, phishing, cryptomining
   - DNS-over-HTTPS upstream (Cloudflare + Quad9) — no plaintext DNS to ISP
   - Docker socket proxy for Watchtower — least-privilege API access, no raw socket
-  - All containers: unprivileged user (65534:65534), cap_drop ALL, read-only rootfs, isolated PID/IPC namespaces
+  - All containers: least-privileged user their function allows, cap_drop ALL, read-only rootfs where possible, isolated PID/IPC namespaces
   - Network isolation: internal network (no internet) + egress-controlled network
   - Skills allowlist with safe-install vetting pipeline (static analysis + VirusTotal + TOCTOU protection)
   - Model file integrity verification (SHA256 checksums)
@@ -25,6 +25,7 @@ Production-grade, security-hardened Docker deployment for OpenClaw, an AI agent 
 
 - **Multiple Deployment Modes**
   - **Local** (default): Gateway on 127.0.0.1:18789
+  - **Llama** (--profile llama): Local LLM inference via llama.cpp (llama-embed + llama-chat)
   - **Tunnel** (--profile tunnel): Cloudflare Tunnel, zero exposed ports
   - **Tailscale** (--profile tailscale): Tailscale mesh VPN, WireGuard-based, ACL-controlled
   - **Monitor** (--profile monitor): Watchtower auto-updates + Dozzle log viewer
@@ -51,9 +52,14 @@ Production-grade, security-hardened Docker deployment for OpenClaw, an AI agent 
 │  (REST API, WebSocket, health checks)                              │
 │  DNS: blocky (threat filtering + DoH)                              │
 │  Networks: openclaw-internal + openclaw-egress                     │
-└─────────┬──────────────────┬──────────────────┬─────────────────────┘
-          │                  │                  │
-    ┌─────▼───────┐   ┌─────▼──────┐   ┌──────▼──────┐
+└─────────┬──────────────────────────────────────┬────────────────────┘
+          │                                      │
+┌─────────▼──────────────────────────────────────▼────────────────────┐
+│                     litellm (LLM router)                            │
+│  OpenAI-compatible /v1 endpoint, internal-only network              │
+└─────────┬──────────────────┬────────────────────────────────────────┘
+          │                  │
+    ┌─────▼───────┐   ┌─────▼──────┐   ┌─────────────┐
     │ llama-embed  │   │ llama-chat │   │   blocky    │
     │ (embeddings) │   │ (chat LLM) │   │(DNS firewall│
     │ internal-only│   │internal-only│   │ DoH + block)│
@@ -96,8 +102,8 @@ mkdir -p models
 # Download embedding model (e.g., nomic-embed-text-v1.5.f16.gguf, ~500MB)
 # Download chat model (e.g., mistral-7b-instruct-v0.2.Q6_K.gguf, ~5.8GB)
 
-# Start containers (local mode only)
-docker-compose up -d
+# Start containers (local mode with local LLM inference)
+docker-compose --profile llama up -d
 
 # Check status
 docker-compose ps
@@ -147,7 +153,7 @@ See `.env.example` for comprehensive documentation. Key variables:
 - `OPENCLAW_IMAGE`: Gateway and CLI image
 - `LLAMA_IMAGE`: llama.cpp server image
 - `CLOUDFLARED_IMAGE`: Cloudflare tunnel image
-- `ALPINE_IMAGE`: Base image for egress firewall init
+- `ALPINE_IMAGE`: Base image for egress firewall sidecar
 
 **Models**
 - `EMBED_MODEL_FILE`: GGUF embedding model filename
@@ -163,6 +169,13 @@ See `.env.example` for comprehensive documentation. Key variables:
 - `LLAMA_EMBED_MEM`, `LLAMA_CHAT_MEM`, `GATEWAY_MEM`: Memory limits
 - `LLAMA_EMBED_CPUS`, `LLAMA_CHAT_CPUS`, `GATEWAY_CPUS`: CPU limits
 - Reservation variants for QoS guarantees
+
+**LiteLLM (LLM Router)**
+- `LITELLM_IMAGE`: LiteLLM proxy image
+- `LITELLM_PORT`: LiteLLM API port (default: 4000, internal only)
+- `LITELLM_MASTER_KEY`: Internal API key for gateway-to-LiteLLM auth
+- `LITELLM_CONFIG`: Path to LiteLLM config file (default: ./litellm_config.yaml)
+- `LITELLM_CPUS`, `LITELLM_MEM`: Resource limits
 
 **Network**
 - `GATEWAY_PORT`: REST API port (default: 18789)
@@ -229,21 +242,25 @@ Allowed traffic:
 ### Network Isolation
 
 **openclaw-internal** (bridge, internal=true):
-- llama-embed, llama-chat, openclaw-gateway
+- llama-embed, llama-chat, litellm, openclaw-gateway, blocky, docker-socket-proxy, watchtower, dozzle, cloudflared, tailscale, openclaw-cli
 - No internet access (internal: true)
 - Services communicate on private network only
 
 **openclaw-egress** (bridge):
-- openclaw-gateway, cloudflared
+- openclaw-gateway, blocky, cloudflared, tailscale, dozzle, openclaw-cli
 - Subject to egress firewall rules
 - Allows outbound to external APIs (with restrictions)
 
 ### Container Hardening
 
-All services (except egress-firewall):
-- User: 65534:65534 (nobody:nogroup)
-- Capabilities: drop ALL (no special kernel access)
-- Read-only filesystem with minimal tmpfs mounts
+Services run as the least-privileged user their function allows:
+- **65534:65534** (nobody:nogroup): llama-embed, llama-chat, litellm, cloudflared, blocky, dozzle
+- **1000:1000** (node): openclaw-gateway, openclaw-cli (upstream image requirement)
+- **root**: egress-firewall (iptables), docker-socket-proxy (socket binding), watchtower (Docker API), tailscale (WireGuard)
+
+All services:
+- Capabilities: drop ALL, then selectively add only what is needed
+- Read-only filesystem where possible (exceptions: egress-firewall, docker-socket-proxy, gateway, cli)
 - no_new_privileges: true (cannot escalate privileges)
 - ipc: private (isolated inter-process communication)
 
@@ -251,8 +268,8 @@ All services (except egress-firewall):
 
 **openclaw-gateway**:
 ```
-wget -q -O - http://127.0.0.1:18789/health
-interval: 10s, timeout: 5s, retries: 3, start_period: 30s
+curl -sf http://127.0.0.1:18789/health
+interval: 10s, timeout: 5s, retries: 5, start_period: 30s
 ```
 
 Cloudflared depends on this healthcheck (service_healthy) before starting.
@@ -279,8 +296,8 @@ The firewall is intentionally strict. To debug:
 
 ```bash
 # Check DOCKER-USER rules
-docker exec openclaw-egress-firewall iptables -L DOCKER-USER -vn
-docker exec openclaw-egress-firewall ip6tables -L DOCKER-USER -vn
+docker exec opendeclawed-egress-firewall iptables -L DOCKER-USER -vn
+docker exec opendeclawed-egress-firewall ip6tables -L DOCKER-USER -vn
 
 # To modify rules, edit docker-compose.yml egress-firewall entrypoint:
 # 1. Restart containers to apply changes:
@@ -295,8 +312,8 @@ docker-compose up -d
 curl http://127.0.0.1:18789/health
 
 # Check internal connectivity
-docker exec openclaw-gateway wget -q -O - http://llama-embed:8090/status
-docker exec openclaw-gateway wget -q -O - http://llama-chat:8091/status
+docker exec opendeclawed-gateway curl -sf http://llama-embed:8090/health
+docker exec opendeclawed-gateway curl -sf http://llama-chat:8091/health
 
 # Check if gateway is on both networks
 docker network inspect openclaw-internal
@@ -364,25 +381,26 @@ docker-compose up -d
 
 ```bash
 # Real-time resource usage
-docker stats openclaw-gateway llama-embed llama-chat
+docker stats opendeclawed-gateway opendeclawed-llama-embed opendeclawed-llama-chat
 
 # Logs with follow
 docker-compose logs -f openclaw-gateway
 
 # Check resource limits
-docker inspect openclaw-gateway | grep -A 20 "HostConfig"
+docker inspect opendeclawed-gateway | grep -A 20 "HostConfig"
 ```
 
 ### Backup and Restore
 
 ```bash
-# Backup gateway home directory
-docker run --rm -v openclaw-home:/data -v $(pwd):/backup \
-  alpine tar czf /backup/openclaw-home.tar.gz -C /data .
+# Backup gateway config directory (bind-mounted from host)
+tar czf openclaw-backup.tar.gz -C ~/.openclaw .
 
 # Restore
-docker run --rm -v openclaw-home:/data -v $(pwd):/backup \
-  alpine tar xzf /backup/openclaw-home.tar.gz -C /data
+mkdir -p ~/.openclaw
+tar xzf openclaw-backup.tar.gz -C ~/.openclaw
+chmod 700 ~/.openclaw
+chmod 600 ~/.openclaw/openclaw.json
 ```
 
 ## Contributing

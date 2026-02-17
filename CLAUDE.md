@@ -40,8 +40,8 @@ docker-compose down -v  # Remove volumes too
 ## Architecture
 
 **Network topology** — two isolated Docker networks:
-- `openclaw-internal` (172.27.0.0/24, `internal: true`): llama-embed, llama-chat, blocky — no internet access
-- `openclaw-egress` (172.28.0.0/24): gateway, litellm, cloudflared, tailscale, dozzle — egress-firewall controlled
+- `openclaw-internal` (172.27.0.0/24, `internal: true`): llama-embed, llama-chat, litellm, openclaw-gateway, blocky, docker-socket-proxy, watchtower, dozzle, cloudflared, tailscale, openclaw-cli — no internet access
+- `openclaw-egress` (172.28.0.0/24): openclaw-gateway, blocky, cloudflared, tailscale, dozzle, openclaw-cli — egress-firewall controlled
 
 **Request flow**: External → Cloudflare Tunnel/Tailscale → openclaw-gateway:18789 → LiteLLM:4000 → llama-chat:8091 / llama-embed:8090
 
@@ -65,7 +65,7 @@ docker-compose down -v  # Remove volumes too
 
 These patterns are enforced by the project. Follow them in all contributions:
 
-1. **Container hardening baseline**: `read_only: true`, `cap_drop: ALL`, `no_new_privileges: true`, `user: "65534:65534"`, `ipc: private`, resource limits, `tmpfs` with `noexec,nosuid,nodev`
+1. **Container hardening baseline**: `read_only: true` (where possible), `cap_drop: ALL`, `no_new_privileges: true`, least-privileged user (`65534:65534` for most, `1000:1000` for gateway/cli, root only when required), `ipc: private`, resource limits, `tmpfs` with `noexec,nosuid,nodev`
 2. **Never mount Docker socket directly** — use `tecnativa/docker-socket-proxy` with least-privilege env flags
 3. **Persistent firewall sidecar** — `restart: unless-stopped` with loop, not one-shot init container
 4. **DNS filtering** — all egress-network containers must use `dns: blocky`

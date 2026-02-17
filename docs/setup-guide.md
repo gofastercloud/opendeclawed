@@ -48,6 +48,11 @@
          ┌─────────────────────────────┼───────────────┐
          │  openclaw-internal (no internet)            │
          │  ┌────────────┐  ┌────────────┐             │
+         │  │   litellm   │  │            │             │
+         │  │ (LLM router)│  │            │             │
+         │  └──────┬──────┘  │            │             │
+         │    ┌────┴────┐    │            │             │
+         │  ┌─▼──────────┐  ┌▼───────────┐             │
          │  │ llama-embed │  │ llama-chat │             │
          │  │ (embeddings)│  │ (light LLM)│             │
          │  └────────────┘  └────────────┘             │
@@ -195,7 +200,7 @@ After the stack starts:
 
 ```bash
 # Check Tailscale is connected
-docker logs openclaw-tailscale
+docker logs opendeclawed-tailscale
 
 # Access from any device on your tailnet
 curl https://openclaw.<your-tailnet>.ts.net/health
@@ -560,7 +565,7 @@ Watchtower auto-updates container images, but mounting `/var/run/docker.sock` di
 
 ```yaml
   docker-socket-proxy:
-    image: tecnativa/docker-socket-proxy:latest
+    image: tecnativa/docker-socket-proxy:0.2.0
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
     environment:
@@ -575,7 +580,7 @@ Watchtower auto-updates container images, but mounting `/var/run/docker.sock` di
       - SECRETS=0       # DENIED: no secret access
 
   watchtower:
-    image: containrrr/watchtower
+    image: containrrr/watchtower:1.7.1
     environment:
       - DOCKER_HOST=tcp://docker-socket-proxy:2375
       - WATCHTOWER_CLEANUP=true
@@ -615,12 +620,12 @@ open http://127.0.0.1:5005
 
 # Or via CLI (still works as before)
 docker compose logs -f openclaw-gateway
-docker compose logs -f openclaw-blocky
+docker compose logs -f blocky
 ```
 
 Features relevant to security operations:
 
-- **Container filter**: DOZZLE_FILTER restricts visibility to `openclaw-*` containers only
+- **Container filter**: DOZZLE_FILTER restricts visibility to `opendeclawed-*` containers only
 - **Regex search**: find specific errors, IP addresses, or DNS queries across all containers
 - **Live tail**: real-time log streaming with pause/resume
 - **No analytics**: DOZZLE_NO_ANALYTICS=true disables telemetry to Dozzle maintainers
@@ -676,8 +681,8 @@ If you have a prosumer router (UniFi, pfSense, OPNsense, MikroTik):
 ### Post-deployment
 
 - [ ] `docker compose ps` shows no host port mappings (Cloudflare mode)
-- [ ] `docker exec openclaw-gateway wget --timeout=3 http://192.168.1.1/` FAILS (firewall working)
-- [ ] `docker exec openclaw-gateway wget --timeout=3 http://10.0.0.1/` FAILS
+- [ ] `docker exec opendeclawed-gateway curl -sf --max-time 3 http://192.168.1.1/` FAILS (firewall working)
+- [ ] `docker exec opendeclawed-gateway curl -sf --max-time 3 http://10.0.0.1/` FAILS
 - [ ] `openclaw doctor` reports no issues
 - [ ] DM policy is `pairing` (not `open`)
 - [ ] Elevated access is `false`

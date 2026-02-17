@@ -11,7 +11,6 @@ exclude_paths:
   - docs/blog-post-draft.md
   - CONTRIBUTING.md
   - README.md
-  - "*.md"
 
 # Detectors are all enabled by default. TruffleHog natively detects:
 #   - Anthropic API keys (sk-ant-api03-...)
