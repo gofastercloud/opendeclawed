@@ -669,7 +669,7 @@ config = {
                 "api": "openai-responses",
                 "models": [
                     {
-                        "id": "litellm/claude",
+                        "id": "litellm/sonnet",
                         "name": "Claude Sonnet (via LiteLLM)",
                         "reasoning": True,
                         "input": ["text"],
@@ -709,19 +709,20 @@ config = {
     "agents": {
         "defaults": {
             "model": {
-                "primary": "litellm/claude",
+                "primary": "litellm/local-chat",
                 "fallbacks": [
                     "litellm/haiku"
                 ]
             },
             "models": {
-                "litellm/claude": {"alias": "Sonnet"},
-                "litellm/haiku":  {"alias": "Haiku"}
+                "litellm/local-chat": {"alias": "Local"},
+                "litellm/haiku":  {"alias": "Haiku"},
+                "litellm/sonnet": {"alias": "Sonnet"}
             },
             "workspace": "/home/node/.openclaw/workspace",
             "heartbeat": {
                 "every": "60m",
-                "model": "litellm/haiku",
+                "model": "litellm/local-chat",
                 "target": "last",
                 "includeReasoning": False,
                 "ackMaxChars": 300
@@ -937,7 +938,7 @@ cat > "${LITELLM_CONFIG}" << 'LITELLMEOF'
 
 model_list:
   # ── Anthropic models (API key from env) ──
-  - model_name: claude
+  - model_name: sonnet
     litellm_params:
       model: anthropic/claude-sonnet-4-5-20250929
       drop_params: true

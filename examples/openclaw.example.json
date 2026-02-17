@@ -18,7 +18,7 @@
         "api": "openai-completions",
         "models": [
           {
-            "id": "litellm/claude",
+            "id": "litellm/sonnet",
             "name": "Claude Sonnet (via LiteLLM)",
             "contextWindow": 200000,
             "maxTokens": 8192
@@ -48,18 +48,20 @@
   "agents": {
     "defaults": {
       "model": {
-        "primary": "litellm/claude",
+        "primary": "litellm/local-chat",
         "fallbacks": [
           "litellm/haiku"
         ]
       },
       "models": {
-        "litellm/claude": { "alias": "Sonnet" },
-        "litellm/haiku":  { "alias": "Haiku" }
+        "litellm/local-chat": { "alias": "Local" },
+        "litellm/haiku":  { "alias": "Haiku" },
+        "litellm/sonnet": { "alias": "Sonnet" }
       },
       "workspace": "/home/node/.openclaw/workspace",
       "heartbeat": {
         "every": "60m",
+        "model": "litellm/local-chat",
         "target": "last"
       },
       "sandbox": {
