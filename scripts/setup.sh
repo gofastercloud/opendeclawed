@@ -876,38 +876,18 @@ info "Written: ${LITELLM_CONFIG}"
 fi
 save_env LITELLM_PORT "${LITELLM_PORT}"
 
-# ── Populate blocky DNS config volume ──
-# Create the volume and copy the bundled config into it.
-# Blocky needs /app/config/config.yml inside the container.
-info "Populating blocky DNS config volume..."
-docker volume create opendeclawed_blocky-config >/dev/null 2>&1 || true
-if ! docker run --rm \
-    -v "${REPO_DIR}/examples/blocky-config.yml:/src/config.yml:ro" \
-    -v opendeclawed_blocky-config:/config \
-    alpine cp /src/config.yml /config/config.yml 2>/dev/null; then
-    warn "Failed to populate blocky config volume. DNS filtering may not work."
-    warn "Ensure Docker can pull alpine image and try again."
-fi
-info "Blocky config ready."
+# ── Blocky DNS config ──
+# Blocky config is bind-mounted from ./examples/blocky-config.yml in docker-compose.yml.
+# No volume population needed.
+info "Blocky config: bind-mount from examples/blocky-config.yml (ready)"
 
 case "${INGRESS_MODE}" in
     tunnel)    PROFILES+=(--profile tunnel) ;;
     tailscale) PROFILES+=(--profile tailscale) ;;
 esac
 
-# Ask about monitoring (default: enabled in both interactive and non-interactive)
-ENABLE_MONITOR="${ENABLE_MONITOR:-true}"
-if [ "${INTERACTIVE}" = true ]; then
-    echo ""
-    read -rp "  Enable monitoring (Watchtower auto-updates + Dozzle log viewer)? [Y/n]: " enable_mon
-    if [[ "${enable_mon}" =~ ^[Nn] ]]; then
-        ENABLE_MONITOR="false"
-    fi
-fi
-if [ "${ENABLE_MONITOR}" != "false" ]; then
-    PROFILES+=(--profile monitor)
-    info "Monitoring enabled (Watchtower + Dozzle)"
-fi
+# Monitoring (Watchtower + Dozzle + socket-proxy) is always enabled — no profile gate.
+info "Monitoring enabled (Watchtower + Dozzle) — always on"
 
 info "Starting stack..."
 docker compose -f "${COMPOSE_FILE}" --env-file "${ENV_FILE}" "${PROFILES[@]}" up -d
@@ -1178,9 +1158,7 @@ echo "    Secrets: ./scripts/scan-secrets.sh        (scan working tree)"
 echo "             ./scripts/scan-secrets.sh --full  (scan git history)"
 [ -n "${VIRUSTOTAL_API_KEY}" ] && \
 echo "    Install: \"install skill <name>\" via Telegram (safe-install skill)"
-if [ "${ENABLE_MONITOR}" != "false" ]; then
 echo ""
 echo "  Monitoring:"
 echo "    Dozzle Logs:  http://127.0.0.1:${DOZZLE_PORT:-5005}/"
-fi
 echo "======================================================================"

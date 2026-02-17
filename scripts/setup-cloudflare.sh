@@ -40,6 +40,15 @@ FQDN="${CF_SUBDOMAIN}.${CF_DOMAIN}"
 echo "=== Cloudflare Setup for $FQDN ==="
 echo ""
 
+# ── 0. Clean up existing tunnel if present ─────────────────────────────
+if [[ -n "${CF_TUNNEL_ID:-}" ]]; then
+  echo "Existing tunnel detected ($CF_TUNNEL_ID). Tearing down first..."
+  "${SCRIPT_DIR}/teardown-cloudflare.sh" --force || warn "Teardown had errors (continuing with fresh setup)"
+  # Reload .env after teardown cleared values
+  load_env "$ENV_FILE"
+  echo ""
+fi
+
 # ── 1. Create Tunnel ────────────────────────────────────────────────────
 TUNNEL_NAME="${CF_TUNNEL_NAME:-$CF_SUBDOMAIN}"
 
@@ -67,7 +76,16 @@ fi
 
 # ── 2. Create DNS CNAME ────────────────────────────────────────────────
 echo "Creating DNS CNAME: $FQDN → ${TUNNEL_ID}.cfargotunnel.com..."
-PAYLOAD=$(json_obj type "CNAME" name "$CF_SUBDOMAIN" content "${TUNNEL_ID}.cfargotunnel.com" proxied "true")
+# proxied must be a JSON boolean (not string), so use python3 for this payload
+PAYLOAD=$(python3 -c "
+import json, sys
+print(json.dumps({
+    'type': 'CNAME',
+    'name': sys.argv[1],
+    'content': sys.argv[2],
+    'proxied': True
+}))
+" "$CF_SUBDOMAIN" "${TUNNEL_ID}.cfargotunnel.com")
 cf_api POST "/zones/$CF_ZONE_ID/dns_records" -d "$PAYLOAD" >/dev/null
 
 echo "✓ DNS record created"

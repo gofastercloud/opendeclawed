@@ -54,17 +54,14 @@
 #  - "cli": Enable openclaw-cli for onboarding/debugging (interactive)
 #
 # USAGE:
-#  # Local mode (no Cloudflare tunnel):
+#  # Local mode (monitoring always included):
 #  docker-compose up -d
 #
 #  # With Cloudflare tunnel (requires CLOUDFLARE_TOKEN):
 #  docker-compose --profile tunnel up -d
 #
-#  # With monitoring (Watchtower + Dozzle logs):
-#  docker-compose --profile monitor up -d
-#
-#  # Full stack (tunnel + monitoring):
-#  docker-compose --profile tunnel --profile monitor up -d
+#  # With Tailscale VPN:
+#  docker-compose --profile tailscale up -d
 #
 #  # With CLI access (for onboarding):
 #  docker-compose --profile cli up -d openclaw-cli
@@ -270,7 +267,7 @@ services:
   #  - No database (stateless proxy -- logs to stdout for Dozzle)
   litellm:
     <<: *hardened-defaults
-    image: "${LITELLM_IMAGE:-ghcr.io/berriai/litellm:main-v1.63.2-stable}"
+    image: "${LITELLM_IMAGE:-ghcr.io/berriai/litellm:main-stable}"
     container_name: opendeclawed-litellm
     command: ["--config", "/app/config.yaml", "--port", "${LITELLM_PORT:-4000}"]
     networks:
@@ -426,33 +423,17 @@ services:
     container_name: opendeclawed-cloudflared
     profiles:
       - tunnel
-    # NOTE: Token-based tunnels use Cloudflare dashboard ingress rules, which
-    # take precedence over this local config. For token tunnels, configure
-    # routes in Cloudflare Zero Trust dashboard under Networks > Tunnels >
-    # Public Hostname. The local config below serves as documentation and
-    # works for locally-managed (credentials-file) tunnels.
-    entrypoint: |
-      /bin/sh -c '
-        mkdir -p /etc/cloudflared
-        cat > /etc/cloudflared/config.yml << CFGEOF
-      ingress:
-        - hostname: "${CLOUDFLARE_TUNNEL_ROUTE:-openclaw.example.com}"
-          path: "/dozzle.*"
-          service: "http://dozzle:${DOZZLE_PORT:-5005}"
-        - hostname: "${CLOUDFLARE_TUNNEL_ROUTE:-openclaw.example.com}"
-          service: "http://openclaw-gateway:${GATEWAY_PORT:-18789}"
-        - service: http_status:404
-      CFGEOF
-        exec cloudflared tunnel --config /etc/cloudflared/config.yml run
-      '
+    # Token-based tunnels: configure ingress rules in Cloudflare Zero Trust
+    # dashboard under Networks > Tunnels > Public Hostname.
+    # The cloudflared image is distroless (no shell), so we pass the token
+    # via TUNNEL_TOKEN env var and use the binary's CLI directly.
+    command: ["tunnel", "run"]
     networks:
       openclaw-internal: {}
       openclaw-egress: {}
     dns:
       - "${BLOCKY_IP:-172.27.0.53}"
     read_only: true
-    tmpfs:
-      - /etc/cloudflared:size=1m,noexec,nosuid,nodev
     user: "65534:65534"
     environment:
       - CLOUDFLARE_TOKEN=${CLOUDFLARE_TOKEN:-}
@@ -576,8 +557,8 @@ services:
     <<: *hardened-defaults
     image: "${SOCKET_PROXY_IMAGE:-tecnativa/docker-socket-proxy:0.2.0}"
     container_name: opendeclawed-socket-proxy
-    profiles:
-      - monitor
+    # Monitoring is default (no profile gate) — socket-proxy, watchtower, dozzle
+    # always start to ensure operational visibility.
     networks:
       openclaw-internal: {}
     volumes:
@@ -670,8 +651,8 @@ services:
       - NET_BIND_SERVICE
     user: "65534:65534"
     healthcheck:
-      # Note: port 4000 is Blocky's internal HTTP API, independent of LiteLLM's port 4000
-      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:4000/api/blocking/status || exit 1"]
+      # Use blocky's built-in healthcheck (DNS query on port 53)
+      test: ["CMD", "/app/blocky", "healthcheck", "--port", "53"]
       interval: 30s
       timeout: 5s
       retries: 3
@@ -702,8 +683,6 @@ services:
     <<: *hardened-defaults
     image: "${WATCHTOWER_IMAGE:-containrrr/watchtower:1.7.1}"
     container_name: opendeclawed-watchtower
-    profiles:
-      - monitor
     networks:
       openclaw-internal: {}
     # SECURITY: No direct Docker socket access. Uses docker-socket-proxy
@@ -754,8 +733,6 @@ services:
     <<: *hardened-defaults
     image: "${DOZZLE_IMAGE:-amir20/dozzle:v8.8.2}"
     container_name: opendeclawed-dozzle
-    profiles:
-      - monitor
     networks:
       openclaw-internal: {}
     # SECURITY: No direct Docker socket. Uses socket-proxy (same as Watchtower).
@@ -907,4 +884,3 @@ volumes:
   #   ~/.openclaw/            -> 700 (owner only)
   #   ~/.openclaw/openclaw.json -> 600
   #   ~/.openclaw/workspace/  -> 700
-
