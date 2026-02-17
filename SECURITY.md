@@ -52,8 +52,8 @@ This document details the security hardening mechanisms in OpenDeclawed. The dep
 - **Full outbound internet**: Egress blocks RFC1918 but allows public internet (necessary for API calls)
 - **Egress-firewall privileges**: Requires `network_mode: host` + `NET_ADMIN` — mitigated by Alpine digest pinning + Trivy scanning
 - **docker inspect secret leakage**: Users in the docker group can read env vars via `docker inspect` — mitigated by socket proxy for automated tools
-- **API authentication**: Basic setup has no auth; add Cloudflare Access or reverse proxy
-- **Encryption in transit**: Local-only mode uses unencrypted HTTP; tunnel mode uses HTTPS via Cloudflare; Tailscale mode uses WireGuard + auto-TLS
+- **API authentication**: Local mode has token auth only; tunnel mode adds Cloudflare Access (GitHub OAuth) as a pre-authentication gate
+- **Encryption in transit**: Local mode uses unencrypted HTTP on 127.0.0.1; tunnel mode uses HTTPS via Cloudflare with `allowInsecureAuth: true` (safe — see [Tunnel Mode](#tunnel-mode---profile-tunnel)); Tailscale mode uses WireGuard + auto-TLS
 - **Side-channel attacks**: Timing/power analysis not addressed
 
 ## Kernel-Level Egress Control
@@ -343,15 +343,57 @@ ports: []  # No localhost binding
 
 **Flow**:
 1. Container initiates outbound connection to Cloudflare edge
-2. Cloudflare routes inbound traffic through tunnel
-3. Users access via public hostname (e.g., openclaw.example.com)
-4. HTTPS encryption provided by Cloudflare
+2. Cloudflare Access enforces GitHub OAuth authentication
+3. Authenticated traffic routes through tunnel to gateway
+4. HTTPS encryption provided by Cloudflare (edge-to-user and edge-to-tunnel)
 
 **Security advantages**:
 - No host port exposure
 - DDoS protection via Cloudflare
 - Free SSL/TLS certificate
+- Pre-authenticated access via Cloudflare Access + GitHub OAuth
 - Easy to enable/disable
+
+#### allowInsecureAuth in Tunnel Mode
+
+In tunnel mode, `allowInsecureAuth` is set to `true` in the generated `openclaw.json`. This enables code-based device pairing over HTTP between the gateway and the tunnel connector (both running on the same Docker network).
+
+**Why this is safe:**
+- The gateway is **not** exposed to the internet directly. The only ingress path is through the Cloudflare Tunnel.
+- Cloudflare Access enforces **GitHub OAuth authentication** before any request reaches the tunnel. Unauthenticated users are redirected to the OAuth login page and never reach the gateway.
+- All traffic between the user's browser and Cloudflare is **HTTPS-encrypted**.
+- The gateway **token** (`?token=...`) is still required for pairing, providing a second authentication factor.
+- The HTTP segment is purely internal: tunnel connector (cloudflared) to gateway, both on the same `openclaw-internal` Docker network with no internet route.
+
+**Why other modes default to `false`:**
+- **Local mode**: Traffic is plaintext HTTP on `127.0.0.1`. While only accessible locally, pairing codes could be observed by other processes on the host.
+- **Tailscale mode**: WireGuard provides transport encryption, but there is no pre-authentication gate equivalent to Cloudflare Access. As defense-in-depth, `allowInsecureAuth` remains `false`.
+
+### mDNS/Bonjour Discovery
+
+The OpenClaw gateway broadcasts its presence via mDNS by default, which can leak operational details (filesystem paths, SSH ports, CLI paths) to the local network. Since the gateway runs inside a Docker container with no need for local network discovery, OpenDeclawed disables this entirely:
+
+```json
+{
+  "discovery": {
+    "mdns": {
+      "mode": "off"
+    }
+  }
+}
+```
+
+This is set automatically by `setup.sh` for all ingress modes.
+
+### Security Audit
+
+OpenClaw provides a built-in security audit tool. Run it after deployment to verify the configuration:
+
+```bash
+docker compose --profile cli run --rm openclaw-cli openclaw security audit --deep
+```
+
+The `--fix` flag can automatically tighten permissive settings. The `--deep` flag performs live probing of the running gateway.
 
 ### CLI Mode (--profile cli)
 

@@ -23,8 +23,8 @@ Production-grade, security-hardened Docker deployment for OpenClaw, an AI agent 
   - CPU-only or GPU-accelerated deployment
 
 - **Multiple Deployment Modes**
-  - **Local** (default): Gateway on 127.0.0.1:18789
-  - **Tunnel** (--profile tunnel): Cloudflare Tunnel, zero exposed ports
+  - **Local** (default): Gateway on 127.0.0.1:18789, `allowInsecureAuth: false`
+  - **Tunnel** (--profile tunnel): Cloudflare Tunnel + Access (GitHub OAuth), zero exposed ports, `allowInsecureAuth: true` (see [Auth Design](#control-ui-auth-design))
   - **Tailscale** (--profile tailscale): Tailscale mesh VPN, WireGuard-based, ACL-controlled
   - **Monitor** (--profile monitor): Watchtower auto-updates + Dozzle log viewer
   - **CLI** (--profile cli): Interactive shell for onboarding/debugging
@@ -68,7 +68,7 @@ Production-grade, security-hardened Docker deployment for OpenClaw, an AI agent 
 │  iptables DOCKER-USER: DROP RFC1918 | Survives Docker restarts     │
 └──────────────────────────────────────────────────────────────────────┘
 
-┌─ MONITOR PROFILE (optional) ────────────────────────────────────────┐
+┌─ MONITORING (always-on) ────────────────────────────────────────────┐
 │  dozzle → real-time log viewer       watchtower → socket-proxy     │
 │  (127.0.0.1:5005)                    (no raw docker.sock access)   │
 └─────────────────────────────────────────────────────────────────────┘
@@ -239,6 +239,28 @@ interval: 10s, timeout: 5s, retries: 5, start_period: 30s
 ```
 
 Cloudflared depends on this healthcheck (service_healthy) before starting.
+
+## Control UI Auth Design
+
+The OpenClaw Control UI supports a `allowInsecureAuth` flag that permits code-based device pairing over HTTP (without TLS). The setup script sets this dynamically based on ingress mode:
+
+| Ingress Mode | `allowInsecureAuth` | Rationale |
+|---|---|---|
+| **tunnel** | `true` | Safe. The only route to the Control UI is through a Cloudflare Tunnel protected by Cloudflare Access + GitHub OAuth. All traffic is encrypted (HTTPS) between the user and Cloudflare edge, and between Cloudflare and the tunnel connector. The gateway token is still required for pairing. Enabling this allows code-only device pairing without requiring the gateway to terminate TLS itself. |
+| **local** | `false` | The gateway listens on `127.0.0.1` only, but HTTP traffic is unencrypted. Code-based pairing over plaintext HTTP could expose the pairing code to local process snooping. |
+| **tailscale** | `false` | Tailscale provides WireGuard encryption, but `allowInsecureAuth` is kept off as a defense-in-depth measure since Tailscale serves traffic directly without an additional authentication gate. |
+
+To override this default, edit the `allowInsecureAuth` value in `~/.openclaw/openclaw.json` after running setup.
+
+### Additional Hardening
+
+The generated config also applies these OpenClaw security best practices:
+
+- **mDNS discovery disabled** (`discovery.mdns.mode: "off"`): The gateway runs inside Docker with no local network peers to discover it. Disabling mDNS prevents leaking operational details (filesystem paths, SSH ports) via Bonjour broadcasts.
+- **Token auth required** (`auth.mode: "token"`): All WebSocket connections require the gateway token. The gateway refuses connections without credentials (fail-closed).
+- **Trusted proxies configured**: Docker network subnets are listed in `trustedProxies` so the gateway correctly identifies client IPs from `X-Forwarded-For` headers when behind the Cloudflare tunnel or Tailscale proxy.
+
+Run `openclaw security audit --deep` after deployment to verify the configuration.
 
 ## Troubleshooting
 

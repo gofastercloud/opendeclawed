@@ -677,11 +677,11 @@ config = {
     },
     "gateway": {
         "port": 18789,
-        "mode": ingress_mode,
+        "mode": "local",
         "bind": "lan",
         "controlUi": {
             "enabled": True,
-            "allowInsecureAuth": ingress_mode == "local"
+            "allowInsecureAuth": ingress_mode == "tunnel"
         },
         "auth": {
             "mode": "token",
@@ -691,6 +691,11 @@ config = {
         "tailscale": {
             "mode": "serve" if ingress_mode == "tailscale" else "off",
             "resetOnExit": False
+        }
+    },
+    "discovery": {
+        "mdns": {
+            "mode": "off"
         }
     }
 }

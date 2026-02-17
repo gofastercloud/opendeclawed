@@ -90,6 +90,11 @@
       "resetOnExit": false
     }
   },
+  "discovery": {
+    "mdns": {
+      "mode": "off"
+    }
+  },
   "channels": {
     "telegram": {
       "enabled": false,
