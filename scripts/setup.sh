@@ -677,7 +677,7 @@ config = {
     },
     "gateway": {
         "port": 18789,
-        "mode": "local",
+        "mode": ingress_mode,
         "bind": "lan",
         "controlUi": {
             "enabled": True,
